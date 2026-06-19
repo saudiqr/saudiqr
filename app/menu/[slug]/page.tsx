@@ -245,8 +245,77 @@ async function submitReview(productId: string, rating: number) {
     return;
   }
 
-  setSuccessMessage("تم إرسال التقييم وسيظهر بعد المراجعة.");
+  setSuccessMessage("تم إرسال التقييم بنجاح.");
 }
+
+  async function callWaiter() {
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    if (!branch || !tableNumber) {
+      setErrorMessage("رقم الطاولة غير موجود.");
+      return;
+    }
+
+    const { data: tableData, error: tableError } = await supabase
+      .from("tables")
+      .select("id")
+      .eq("branch_id", branch.id)
+      .eq("table_number", Number(tableNumber))
+      .single();
+
+    if (tableError || !tableData) {
+      setErrorMessage("لم يتم العثور على الطاولة.");
+      return;
+    }
+
+    const { error } = await supabase.from("waiter_calls").insert({
+      branch_id: branch.id,
+      table_id: tableData.id,
+    });
+
+    if (error) {
+      setErrorMessage("فشل استدعاء النادل.");
+      return;
+    }
+
+    setSuccessMessage("تم استدعاء النادل بنجاح.");
+  }
+
+  async function requestBill() {
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    if (!branch || !tableNumber) {
+      setErrorMessage("رقم الطاولة غير موجود.");
+      return;
+    }
+
+    const { data: tableData, error: tableError } = await supabase
+      .from("tables")
+      .select("id")
+      .eq("branch_id", branch.id)
+      .eq("table_number", Number(tableNumber))
+      .single();
+
+    if (tableError || !tableData) {
+      setErrorMessage("لم يتم العثور على الطاولة.");
+      return;
+    }
+
+    const { error } = await supabase.from("bill_requests").insert({
+      branch_id: branch.id,
+      table_id: tableData.id,
+    });
+
+    if (error) {
+      setErrorMessage("فشل طلب الفاتورة.");
+      return;
+    }
+
+    setSuccessMessage("تم إرسال طلب الفاتورة.");
+  }
+
   useEffect(() => {
     loadMenu();
   }, []);
@@ -321,11 +390,60 @@ async function submitReview(productId: string, rating: number) {
             )}
 
             {tableNumber && (
-              <div
-                className="mx-auto mt-5 w-fit rounded-full px-5 py-2 font-black text-black"
-                style={{ backgroundColor: primaryColor }}
-              >
-                طاولة رقم {tableNumber}
+              <div>
+                <div
+                  className="mx-auto mt-5 w-fit rounded-full px-5 py-2 font-black text-black"
+                  style={{ backgroundColor: primaryColor }}
+                >
+                  طاولة رقم {tableNumber}
+                </div>
+
+                <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                  <button
+                    onClick={callWaiter}
+                    className="rounded-3xl border border-blue-400/30 bg-blue-500/20 p-5 text-center font-black text-blue-200 shadow-xl"
+                  >
+                    <div className="text-3xl">🛎️</div>
+                    <div className="mt-2">استدعاء نادل</div>
+                    <div className="mt-1 text-xs font-normal text-blue-200/70">
+                      للمساعدة أو الطلب من الموظف
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={requestBill}
+                    className="rounded-3xl border border-yellow-400/30 bg-yellow-500/20 p-5 text-center font-black text-yellow-200 shadow-xl"
+                  >
+                    <div className="text-3xl">💳</div>
+                    <div className="mt-2">طلب الفاتورة</div>
+                    <div className="mt-1 text-xs font-normal text-yellow-200/70">
+                      اطلب الحساب من الكاشير
+                    </div>
+                  </button>
+
+                  <a
+                    href="#products"
+                    className="rounded-3xl border border-emerald-400/30 bg-emerald-500/20 p-5 text-center font-black text-emerald-200 shadow-xl"
+                  >
+                    <div className="text-3xl">🛒</div>
+                    <div className="mt-2">طلب من المنيو</div>
+                    <div className="mt-1 text-xs font-normal text-emerald-200/70">
+                      اختر المنتجات ثم أرسل الطلب
+                    </div>
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {errorMessage && (
+              <div className="mx-auto mt-5 max-w-xl rounded-2xl bg-red-500/20 p-4 text-red-300">
+                {errorMessage}
+              </div>
+            )}
+
+            {successMessage && (
+              <div className="mx-auto mt-5 max-w-xl rounded-2xl bg-emerald-500/20 p-4 text-emerald-300">
+                {successMessage}
               </div>
             )}
           </div>
@@ -350,7 +468,7 @@ async function submitReview(productId: string, rating: number) {
           </div>
         )}
 
-        <div className="mt-8 space-y-8">
+        <div id="products" className="mt-8 space-y-8">
           {categories.map((category) => {
             const availableProducts =
               category.products?.filter(
@@ -432,7 +550,10 @@ async function submitReview(productId: string, rating: number) {
       </section>
 
       {cart.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-[#081b14] p-4">
+        <div
+  id="cart"
+  className="fixed bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-[#081b14] p-4"
+>
           <div className="mx-auto max-w-3xl rounded-3xl bg-white/5 p-4 shadow-2xl">
             <h3 className="text-xl font-black">السلة</h3>
 

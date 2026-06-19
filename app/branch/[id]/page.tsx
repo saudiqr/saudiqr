@@ -109,6 +109,19 @@ export default async function BranchPage({
 >
   ⭐ التقييمات
 </Link>
+<Link
+  href={`/branch/${id}/waiter-calls`}
+  className="rounded-3xl border border-white/10 bg-white/5 p-6 text-center font-black hover:bg-white/10"
+>
+  🛎️ طلبات النادل
+</Link>
+
+<Link
+  href={`/branch/${id}/bill-requests`}
+  className="rounded-3xl border border-white/10 bg-white/5 p-6 text-center font-black hover:bg-white/10"
+>
+  💳 طلبات الفاتورة
+</Link>
         </div>
       </div>
     </main>
