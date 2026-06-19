@@ -97,7 +97,18 @@ export default async function BranchPage({
 >
   الإحصائيات
 </Link>
-
+<Link
+  href={`/branch/${id}/settings`}
+  className="rounded-3xl bg-white/5 p-6 text-center hover:bg-white/10"
+>
+  الإعدادات
+</Link>
+<Link
+  href={`/branch/${id}/reviews`}
+  className="rounded-3xl border border-white/10 bg-white/5 p-6 font-black hover:bg-white/10"
+>
+  ⭐ التقييمات
+</Link>
         </div>
       </div>
     </main>
