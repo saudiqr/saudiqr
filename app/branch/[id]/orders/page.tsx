@@ -62,12 +62,39 @@ export default function OrdersPage() {
   }
 
   useEffect(() => {
-    loadOrders();
+  loadOrders();
 
-    const interval = setInterval(loadOrders, 5000);
+  const channel = supabase
+    .channel(`orders-realtime-${branchId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "orders",
+        filter: `branch_id=eq.${branchId}`,
+      },
+      () => {
+        loadOrders();
+      }
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "order_items",
+      },
+      () => {
+        loadOrders();
+      }
+    )
+    .subscribe();
 
-    return () => clearInterval(interval);
-  }, []);
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [branchId]);
 
   return (
     <main dir="rtl" className="min-h-screen bg-[#06140f] p-10 text-white">
