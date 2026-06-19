@@ -79,6 +79,24 @@ export default async function BranchPage({
 >
   الطلبات
 </Link>
+<Link
+  href={`/branch/${id}/kitchen`}
+  className="rounded-3xl bg-white/5 p-6 text-center hover:bg-white/10"
+>
+  شاشة المطبخ
+</Link>
+<Link
+  href={`/branch/${id}/cashier`}
+  className="rounded-3xl bg-white/5 p-6 text-center hover:bg-white/10"
+>
+  شاشة الكاشير
+</Link>
+<Link
+  href={`/branch/${id}/stats`}
+  className="rounded-3xl bg-white/5 p-6 text-center hover:bg-white/10"
+>
+  الإحصائيات
+</Link>
 
         </div>
       </div>
