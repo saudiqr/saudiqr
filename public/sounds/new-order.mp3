@@ -1,3 +1,3 @@
-public/sounds/new-order.mp3
+audioRef.current = new Audio("/sounds/new-order.wav");
 public/sounds/waiter-call.mp3
 public/sounds/bill-request.mp3

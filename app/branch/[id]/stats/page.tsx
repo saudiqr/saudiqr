@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import BranchPageHeader from "@/components/BranchPageHeader";
+import BranchLayout from "@/components/BranchLayout";
 
 type Stats = {
   totalOrders: number;
@@ -67,8 +69,13 @@ export default function StatsPage() {
   }, []);
 
   return (
-    <main dir="rtl" className="min-h-screen bg-[#06140f] p-10 text-white">
-      <h1 className="text-4xl font-black">إحصائيات الفرع</h1>
+    <BranchLayout branchId={branchId}>
+    <div className="mx-auto max-w-7xl">
+      <BranchPageHeader
+  title="إحصائيات الفرع"
+  description="شاهد إحصائيات الأداء والطلبات داخل الفرع."
+  branchId={branchId}
+/>
 
       <div className="mt-10 grid gap-5 md:grid-cols-3">
         <Card title="إجمالي الطلبات" value={stats.totalOrders} />
@@ -78,13 +85,14 @@ export default function StatsPage() {
         <Card title="جاهز" value={stats.readyOrders} />
         <Card title="تم التسليم" value={stats.deliveredOrders} />
       </div>
-    </main>
-  );
+        </div>
+  </BranchLayout>
+);
 }
 
 function Card({ title, value }: { title: string; value: string | number }) {
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+    <div className="rounded-3xl border border-emerald-500/30 bg-[#06140f] p-6 text-white">
       <p className="text-sm text-gray-400">{title}</p>
       <h2 className="mt-3 text-3xl font-black">{value}</h2>
     </div>

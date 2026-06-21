@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { QRCodeCanvas } from "qrcode.react";
 import html2canvas from "html2canvas";
 import { supabase } from "@/lib/supabase";
+import BranchLayout from "@/components/BranchLayout";
 
 type Branch = {
   id: string;
@@ -71,9 +72,9 @@ export default function QRPage() {
 
   if (!branch) {
     return (
-      <main dir="rtl" className="min-h-screen bg-[#06140f] p-10 text-white">
+      <BranchLayout branchId={branchId}>
         جاري تحميل QR...
-      </main>
+      </BranchLayout>
     );
   }
 

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import BranchPageHeader from "@/components/BranchPageHeader";
+import BranchLayout from "@/components/BranchLayout";
 
 type Review = {
   id: string;
@@ -22,6 +24,16 @@ export default function ReviewsPage() {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const totalReviews = reviews.length;
+  const fiveStarsCount = reviews.filter((review) => review.rating === 5).length;
+  const reportedNote =
+    "التقييمات الحقيقية تظهر مباشرة. الإبلاغ مخصص للإساءة أو السبام فقط، والمراجعة تكون من لوحة الأدمن.";
+
+  const averageRating =
+    totalReviews > 0
+      ? reviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews
+      : 0;
+
   async function loadReviews() {
     const { data } = await supabase
       .from("product_reviews")
@@ -36,139 +48,147 @@ export default function ReviewsPage() {
         )
       `)
       .eq("branch_id", branchId)
-      .order("approved", { ascending: true })
-.order("created_at", { ascending: false });
+      .eq("approved", true)
+      .order("created_at", { ascending: false });
 
     setReviews((data || []) as unknown as Review[]);
     setLoading(false);
   }
 
-  async function rejectReview(reviewId: string) {
-    await supabase
-      .from("product_reviews")
-      .delete()
-      .eq("id", reviewId);
-
-    await loadReviews();
-  }
-async function reportReview(reviewId: string) {
-  await supabase
-    .from("review_reports")
-    .insert({
+  async function reportReview(reviewId: string) {
+    const { error } = await supabase.from("review_reports").insert({
       review_id: reviewId,
       reason: "Reported by restaurant",
     });
 
-  alert("تم إرسال البلاغ");
-}
+    if (error) {
+      alert("تعذر إرسال البلاغ.");
+      return;
+    }
+
+    alert("تم إرسال البلاغ للأدمن.");
+  }
+
   useEffect(() => {
     loadReviews();
-  }, []);
+
+    const channel = supabase
+      .channel(`product-reviews-${branchId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "product_reviews",
+          filter: `branch_id=eq.${branchId}`,
+        },
+        () => {
+          loadReviews();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [branchId]);
 
   if (loading) {
     return (
-      <main dir="rtl" className="min-h-screen bg-[#06140f] p-10 text-white">
+      <BranchLayout branchId={branchId}>
         جاري تحميل التقييمات...
-      </main>
+      </BranchLayout>
     );
   }
 
   return (
-    <main dir="rtl" className="min-h-screen bg-[#06140f] p-10 text-white">
-      <h1 className="text-4xl font-black">إدارة التقييمات</h1>
-      <div className="mt-8 grid gap-4 md:grid-cols-3">
-  <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-    <p className="text-gray-400">إجمالي التقييمات</p>
-    <p className="mt-2 text-3xl font-black">{reviews.length}</p>
-  </div>
+    <BranchLayout branchId={branchId}>
+      <div className="mx-auto max-w-7xl">
+        <BranchPageHeader
+          title="التقييمات"
+          description="تابع تقييمات العملاء الحقيقية. التقييمات تظهر مباشرة، والإبلاغ يذهب للأدمن للمراجعة."
+          branchId={branchId}
+        />
 
-  <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-    <p className="text-gray-400">متوسط التقييم</p>
-    <p className="mt-2 text-3xl font-black">
-      ⭐{" "}
-      {reviews.length > 0
-        ? (
-            reviews.reduce((sum, review) => sum + review.rating, 0) /
-            reviews.length
-          ).toFixed(1)
-        : "0.0"}
-    </p>
-  </div>
+        <section className="mt-8 grid gap-4 md:grid-cols-3">
+          <StatCard title="إجمالي التقييمات" value={totalReviews} />
+          <StatCard title="متوسط التقييم" value={`⭐ ${averageRating.toFixed(1)}`} />
+          <StatCard title="تقييم 5 نجوم" value={fiveStarsCount} />
+        </section>
 
-  <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-  <p className="text-gray-400">تقييم 5 نجوم</p>
-  <p className="mt-2 text-3xl font-black">
-    {reviews.filter((review) => review.rating === 5).length}
-  </p>
-</div>
-</div>
+        <div className="mt-6 rounded-3xl border border-amber-500/20 bg-amber-500/10 p-5 text-amber-200">
+          {reportedNote}
+        </div>
 
-      <p className="mt-4 text-gray-400">
-       التقييمات تظهر مباشرة، ويمكنك الإبلاغ عن الإساءة أو السبام.
-      </p>
-
-      <div className="mt-8 space-y-4">
-        {reviews.length === 0 && (
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-gray-400">
-            لا توجد تقييمات حتى الآن.
-          </div>
-        )}
-
-        {reviews.map((review) => (
-          <div
-            key={review.id}
-            className="rounded-3xl border border-white/10 bg-white/5 p-6"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-black">
-                  {review.products?.name || "منتج غير معروف"}
-                </h2>
-
-                <p className="mt-2 text-2xl">
-                  {"⭐".repeat(review.rating)}
-                </p>
-
-                {review.comment && (
-                  <p className="mt-3 text-gray-300">{review.comment}</p>
-                )}
-
-                <p className="mt-3 text-xs text-gray-500">
-                  {new Date(review.created_at).toLocaleString("ar-SA")}
-                </p>
-              </div>
-
-              <span
-                className={`rounded-full px-4 py-2 text-sm font-black ${
-                  review.approved
-                    ? "bg-emerald-500/20 text-emerald-300"
-                    : "bg-amber-500/20 text-amber-300"
-                }`}
-              >
-                {review.approved ? "ظاهر" : "مخفي"}
-              </span>
+        <div className="mt-8">
+          {reviews.length === 0 ? (
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-10 text-center text-gray-400">
+              لا توجد تقييمات حتى الآن.
             </div>
+          ) : (
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+              {reviews.map((review) => (
+                <div
+                  key={review.id}
+                  className="rounded-3xl border border-white/10 bg-white/5 p-6"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h2 className="text-xl font-black">
+                        {review.products?.name || "منتج غير معروف"}
+                      </h2>
 
-            <div className="mt-6 flex gap-3">
+                      <p className="mt-3 text-2xl">
+                        {"⭐".repeat(review.rating)}
+                      </p>
 
-  <button
-    onClick={() => reportReview(review.id)}
-    className="rounded-2xl bg-amber-500/20 px-5 py-3 font-black text-amber-300"
-  >
-    🚩 إبلاغ
-  </button>
+                      <p className="mt-3 text-xs text-gray-500">
+                        {new Date(review.created_at).toLocaleString("ar-SA")}
+                      </p>
+                    </div>
 
-  <button
-    onClick={() => rejectReview(review.id)}
-    className="rounded-2xl bg-red-500/20 px-5 py-3 font-black text-red-300"
-  >
-    حذف
-  </button>
+                    <span className="rounded-full bg-emerald-500/20 px-4 py-2 text-sm font-black text-emerald-300">
+                      ظاهر
+                    </span>
+                  </div>
 
-</div>
-          </div>
-        ))}
+                  {review.comment ? (
+                    <div className="mt-5 rounded-2xl bg-black/25 p-4 text-gray-300">
+                      {review.comment}
+                    </div>
+                  ) : (
+                    <div className="mt-5 rounded-2xl bg-black/25 p-4 text-gray-500">
+                      لا يوجد تعليق مكتوب.
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => reportReview(review.id)}
+                    className="mt-6 w-full rounded-2xl bg-amber-500/20 px-5 py-4 font-black text-amber-300"
+                  >
+                    🚩 إبلاغ عن إساءة أو سبام
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-    </main>
+    </BranchLayout>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+}: {
+  title: string;
+  value: number | string;
+}) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-5">
+      <p className="text-sm text-gray-400">{title}</p>
+      <p className="mt-2 text-3xl font-black">{value}</p>
+    </div>
   );
 }

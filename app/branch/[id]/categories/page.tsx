@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import BranchPageHeader from "@/components/BranchPageHeader";
+import BranchLayout from "@/components/BranchLayout";
 
 type Category = {
   id: string;
@@ -66,8 +68,12 @@ export default function CategoriesPage() {
   }, []);
 
   return (
-    <main dir="rtl" className="min-h-screen bg-[#06140f] p-10 text-white">
-      <h1 className="text-4xl font-black">إدارة الأقسام</h1>
+     <BranchLayout branchId={branchId}>
+      <BranchPageHeader
+  title="إدارة الأقسام"
+  description="أضف الأقسام ورتبها لتظهر بشكل منظم داخل المنيو."
+  branchId={branchId}
+/>
 
       <div className="mt-8 max-w-md">
         <input
@@ -102,6 +108,6 @@ export default function CategoriesPage() {
           </div>
         ))}
       </div>
-    </main>
+    </BranchLayout>
   );
 }

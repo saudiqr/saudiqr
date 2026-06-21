@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import BranchPageHeader from "@/components/BranchPageHeader";
+import BranchLayout from "@/components/BranchLayout";
 
 type Category = {
   id: string;
@@ -265,8 +267,12 @@ export default function ProductsPage() {
   }, []);
 
   return (
-    <main dir="rtl" className="min-h-screen bg-[#06140f] p-10 text-white">
-      <h1 className="text-4xl font-black">إدارة المنتجات</h1>
+    <BranchLayout branchId={branchId}>
+      <BranchPageHeader
+  title="إدارة المنتجات"
+  description="أضف الأقسام ورتبها لتظهر بشكل منظم داخل المنيو."
+  branchId={branchId}
+/>
 
       <p className="mt-4 text-sm text-gray-400">
         عدد الأقسام: {categories.length}
@@ -443,6 +449,6 @@ export default function ProductsPage() {
           </div>
         ))}
       </div>
-    </main>
+    </BranchLayout>
   );
 }

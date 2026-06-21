@@ -43,6 +43,11 @@ type CartItem = {
   quantity: number;
 };
 
+type TableData = {
+  id: string;
+  current_session_id: string | null;
+};
+
 export default function MenuPage() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -64,6 +69,121 @@ export default function MenuPage() {
   const primaryColor = settings?.primary_color || "#10b981";
   const secondaryColor = settings?.secondary_color || "#06140f";
 
+  function getDeviceId() {
+    let deviceId = localStorage.getItem("saudiqr_device_id");
+
+    if (!deviceId) {
+      deviceId = crypto.randomUUID();
+      localStorage.setItem("saudiqr_device_id", deviceId);
+    }
+
+    return deviceId;
+  }
+
+  async function getTableData(branchId: string): Promise<TableData | null> {
+    if (!tableNumber) return null;
+
+    const { data, error } = await supabase
+      .from("tables")
+      .select("id, current_session_id")
+      .eq("branch_id", branchId)
+      .eq("table_number", Number(tableNumber))
+      .single();
+
+    if (error || !data) return null;
+
+    return data as TableData;
+  }
+
+  async function logActivity(
+    branchId: string,
+    tableId: string,
+    activityType: string
+  ) {
+    await supabase.from("table_activity_logs").insert({
+      branch_id: branchId,
+      table_id: tableId,
+      device_id: getDeviceId(),
+      activity_type: activityType,
+    });
+  }
+
+  async function getOrCreateTableSession(
+    branchId: string,
+    tableId: string,
+    currentSessionId: string | null
+  ) {
+    const now = new Date().toISOString();
+
+    if (currentSessionId) {
+      await supabase
+        .from("tables")
+        .update({
+          last_activity_at: now,
+        })
+        .eq("id", tableId);
+
+      return currentSessionId;
+    }
+
+    const { data: sessionData, error: sessionError } = await supabase
+      .from("table_sessions")
+      .insert({
+        branch_id: branchId,
+        table_id: tableId,
+        status: "active",
+        opened_at: now,
+      })
+      .select("id")
+      .single();
+
+    if (sessionError || !sessionData) {
+      throw new Error("فشل إنشاء جلسة الطاولة.");
+    }
+
+    await supabase
+      .from("tables")
+      .update({
+        status: "occupied",
+        current_session_id: sessionData.id,
+        occupied_since: now,
+        last_activity_at: now,
+      })
+      .eq("id", tableId);
+
+    return sessionData.id as string;
+  }
+
+  async function trackMenuOpened(branchData: Branch) {
+    if (!tableNumber) return;
+
+    const tableData = await getTableData(branchData.id);
+    if (!tableData) return;
+
+    const key = `saudiqr_menu_opened_${branchData.id}_${tableData.id}`;
+
+    if (sessionStorage.getItem(key)) return;
+
+    sessionStorage.setItem(key, "true");
+
+    await logActivity(branchData.id, tableData.id, "menu_opened");
+  }
+
+  async function trackCartStarted() {
+    if (!branch || !tableNumber) return;
+
+    const tableData = await getTableData(branch.id);
+    if (!tableData) return;
+
+    const key = `saudiqr_cart_started_${branch.id}_${tableData.id}`;
+
+    if (sessionStorage.getItem(key)) return;
+
+    sessionStorage.setItem(key, "true");
+
+    await logActivity(branch.id, tableData.id, "cart_started");
+  }
+
   async function loadMenu() {
     setLoading(true);
 
@@ -79,6 +199,7 @@ export default function MenuPage() {
     }
 
     setBranch(branchData);
+    await trackMenuOpened(branchData);
 
     const { data: settingsData } = await supabase
       .from("branch_settings")
@@ -114,6 +235,10 @@ export default function MenuPage() {
   }
 
   function addToCart(product: Product) {
+    if (cart.length === 0) {
+      trackCartStarted();
+    }
+
     setCart((currentCart) => {
       const existingItem = currentCart.find(
         (item) => item.product.id === product.id
@@ -166,27 +291,63 @@ export default function MenuPage() {
 
     setSending(true);
 
-    const { data: tableData, error: tableError } = await supabase
-      .from("tables")
-      .select("id")
-      .eq("branch_id", branch.id)
-      .eq("table_number", Number(tableNumber))
-      .single();
+    const tableData = await getTableData(branch.id);
 
-    if (tableError || !tableData) {
+    if (!tableData) {
       setSending(false);
       setErrorMessage("لم يتم العثور على الطاولة.");
       return;
     }
+
+    let tableSessionId = "";
+
+    try {
+      tableSessionId = await getOrCreateTableSession(
+        branch.id,
+        tableData.id,
+        tableData.current_session_id
+      );
+    } catch (error) {
+      setSending(false);
+      setErrorMessage("فشل إنشاء جلسة الطاولة.");
+      return;
+    }
+
+    const today = new Date();
+
+    const year = String(today.getFullYear()).slice(-2);
+    const month = String(today.getMonth() + 1).padStart(2, "0");
+    const day = String(today.getDate()).padStart(2, "0");
+
+    const dateCode = `${year}${month}${day}`;
+    const tableCode = String(tableNumber).padStart(2, "0");
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const { count: todayOrdersCount } = await supabase
+      .from("orders")
+      .select("*", { count: "exact", head: true })
+      .eq("branch_id", branch.id)
+      .gte("created_at", startOfDay.toISOString())
+      .lte("created_at", endOfDay.toISOString());
+
+    const orderSequence = String((todayOrdersCount || 0) + 1).padStart(4, "0");
+    const orderNumber = `${dateCode}/${tableCode}/${orderSequence}`;
 
     const { data: orderData, error: orderError } = await supabase
       .from("orders")
       .insert({
         branch_id: branch.id,
         table_id: tableData.id,
+        table_session_id: tableSessionId,
         status: "new",
         total,
         notes,
+        order_number: orderNumber,
       })
       .select("id")
       .single();
@@ -214,39 +375,54 @@ export default function MenuPage() {
       return;
     }
 
+    const now = new Date().toISOString();
+
+    await supabase
+      .from("table_sessions")
+      .update({
+        ordered_at: now,
+      })
+      .eq("id", tableSessionId)
+      .is("ordered_at", null);
+
+    await supabase
+      .from("tables")
+      .update({
+        status: "occupied",
+        current_session_id: tableSessionId,
+        last_activity_at: now,
+      })
+      .eq("id", tableData.id);
+
+    await logActivity(branch.id, tableData.id, "order_sent");
+
     setCart([]);
     setNotes("");
     setSending(false);
     setSuccessMessage("تم إرسال الطلب بنجاح.");
   }
-async function submitReview(productId: string, rating: number) {
-  setErrorMessage("");
-  setSuccessMessage("");
 
-  if (!branch) return;
+  async function submitReview(productId: string, rating: number) {
+    setErrorMessage("");
+    setSuccessMessage("");
 
-  let deviceId = localStorage.getItem("saudiqr_device_id");
+    if (!branch) return;
 
-  if (!deviceId) {
-    deviceId = crypto.randomUUID();
-    localStorage.setItem("saudiqr_device_id", deviceId);
+    const { error } = await supabase.from("product_reviews").insert({
+      branch_id: branch.id,
+      product_id: productId,
+      device_id: getDeviceId(),
+      rating,
+      approved: true,
+    });
+
+    if (error) {
+      setErrorMessage("سبق وقمت بتقييم هذا المنتج.");
+      return;
+    }
+
+    setSuccessMessage("تم إرسال التقييم بنجاح.");
   }
-
-  const { error } = await supabase.from("product_reviews").insert({
-  branch_id: branch.id,
-  product_id: productId,
-  device_id: deviceId,
-  rating,
-  approved: true,
-});
-
-  if (error) {
-    setErrorMessage("سبق وقمت بتقييم هذا المنتج.");
-    return;
-  }
-
-  setSuccessMessage("تم إرسال التقييم بنجاح.");
-}
 
   async function callWaiter() {
     setErrorMessage("");
@@ -257,15 +433,23 @@ async function submitReview(productId: string, rating: number) {
       return;
     }
 
-    const { data: tableData, error: tableError } = await supabase
-      .from("tables")
-      .select("id")
-      .eq("branch_id", branch.id)
-      .eq("table_number", Number(tableNumber))
-      .single();
+    const tableData = await getTableData(branch.id);
 
-    if (tableError || !tableData) {
+    if (!tableData) {
       setErrorMessage("لم يتم العثور على الطاولة.");
+      return;
+    }
+
+    let tableSessionId = "";
+
+    try {
+      tableSessionId = await getOrCreateTableSession(
+        branch.id,
+        tableData.id,
+        tableData.current_session_id
+      );
+    } catch (error) {
+      setErrorMessage("فشل إنشاء جلسة الطاولة.");
       return;
     }
 
@@ -279,6 +463,17 @@ async function submitReview(productId: string, rating: number) {
       return;
     }
 
+    await supabase
+      .from("tables")
+      .update({
+        status: "occupied",
+        current_session_id: tableSessionId,
+        last_activity_at: new Date().toISOString(),
+      })
+      .eq("id", tableData.id);
+
+    await logActivity(branch.id, tableData.id, "waiter_called");
+
     setSuccessMessage("تم استدعاء النادل بنجاح.");
   }
 
@@ -291,15 +486,23 @@ async function submitReview(productId: string, rating: number) {
       return;
     }
 
-    const { data: tableData, error: tableError } = await supabase
-      .from("tables")
-      .select("id")
-      .eq("branch_id", branch.id)
-      .eq("table_number", Number(tableNumber))
-      .single();
+    const tableData = await getTableData(branch.id);
 
-    if (tableError || !tableData) {
+    if (!tableData) {
       setErrorMessage("لم يتم العثور على الطاولة.");
+      return;
+    }
+
+    let tableSessionId = "";
+
+    try {
+      tableSessionId = await getOrCreateTableSession(
+        branch.id,
+        tableData.id,
+        tableData.current_session_id
+      );
+    } catch (error) {
+      setErrorMessage("فشل إنشاء جلسة الطاولة.");
       return;
     }
 
@@ -312,6 +515,27 @@ async function submitReview(productId: string, rating: number) {
       setErrorMessage("فشل طلب الفاتورة.");
       return;
     }
+
+    const now = new Date().toISOString();
+
+    await supabase
+      .from("table_sessions")
+      .update({
+        bill_requested_at: now,
+      })
+      .eq("id", tableSessionId)
+      .is("bill_requested_at", null);
+
+    await supabase
+      .from("tables")
+      .update({
+        status: "billing",
+        current_session_id: tableSessionId,
+        last_activity_at: now,
+      })
+      .eq("id", tableData.id);
+
+    await logActivity(branch.id, tableData.id, "bill_requested");
 
     setSuccessMessage("تم إرسال طلب الفاتورة.");
   }
@@ -396,6 +620,15 @@ async function submitReview(productId: string, rating: number) {
                   style={{ backgroundColor: primaryColor }}
                 >
                   طاولة رقم {tableNumber}
+                </div>
+
+                <div className="mt-5 rounded-3xl border border-white/10 bg-black/20 p-5 text-right">
+                  <h2 className="font-black">طريقة الطلب</h2>
+                  <div className="mt-3 grid gap-3 text-sm text-gray-300 sm:grid-cols-3">
+                    <div>1- اختر المنتجات وأضفها للسلة.</div>
+                    <div>2- اضغط إرسال الطلب من أسفل الصفحة.</div>
+                    <div>3- يمكنك استدعاء نادل أو طلب الفاتورة من هنا.</div>
+                  </div>
                 </div>
 
                 <div className="mt-6 grid gap-3 sm:grid-cols-3">
@@ -518,21 +751,24 @@ async function submitReview(productId: string, rating: number) {
                           {product.price} ريال
                         </p>
                       </div>
-{product.product_reviews && product.product_reviews.length > 0 && (
-  <div className="mt-3 text-sm text-gray-300">
-    ⭐{" "}
-    {(
-      product.product_reviews.reduce(
-        (sum, review) => sum + review.rating,
-        0
-      ) / product.product_reviews.length
-    ).toFixed(1)}
-    <span className="text-gray-500">
-      {" "}
-      ({product.product_reviews.length} تقييم)
-    </span>
-  </div>
-)}
+
+                      {product.product_reviews &&
+                        product.product_reviews.length > 0 && (
+                          <div className="mt-3 text-sm text-gray-300">
+                            ⭐{" "}
+                            {(
+                              product.product_reviews.reduce(
+                                (sum, review) => sum + review.rating,
+                                0
+                              ) / product.product_reviews.length
+                            ).toFixed(1)}
+                            <span className="text-gray-500">
+                              {" "}
+                              ({product.product_reviews.length} تقييم)
+                            </span>
+                          </div>
+                        )}
+
                       <button
                         onClick={() => addToCart(product)}
                         className="mt-5 w-full rounded-2xl px-5 py-4 font-black text-black"
@@ -551,9 +787,9 @@ async function submitReview(productId: string, rating: number) {
 
       {cart.length > 0 && (
         <div
-  id="cart"
-  className="fixed bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-[#081b14] p-4"
->
+          id="cart"
+          className="fixed bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-[#081b14] p-4"
+        >
           <div className="mx-auto max-w-3xl rounded-3xl bg-white/5 p-4 shadow-2xl">
             <h3 className="text-xl font-black">السلة</h3>
 
