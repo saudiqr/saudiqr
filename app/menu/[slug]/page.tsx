@@ -4,6 +4,10 @@ import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
+type Review = {
+  rating: number;
+};
+
 type Product = {
   id: string;
   name: string;
@@ -12,9 +16,7 @@ type Product = {
   image_url: string | null;
   active: boolean;
   stock_quantity: number | null;
-  product_reviews?: {
-    rating: number;
-  }[];
+  reviews?: Review[];
 };
 
 type Category = {
@@ -65,6 +67,8 @@ export default function MenuPage() {
   const [successMessage, setSuccessMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [serviceReviews, setServiceReviews] = useState<Review[]>([]);
+  const [reviewSending, setReviewSending] = useState<string | null>(null);
 
   const primaryColor = settings?.primary_color || "#10b981";
   const secondaryColor = settings?.secondary_color || "#06140f";
@@ -78,6 +82,47 @@ export default function MenuPage() {
     }
 
     return deviceId;
+  }
+
+  function getAverageRating(reviews?: Review[]) {
+    if (!reviews || reviews.length === 0) return null;
+
+    const total = reviews.reduce((sum, review) => sum + review.rating, 0);
+    return total / reviews.length;
+  }
+
+  function renderStars(value: number) {
+    return "★".repeat(value) + "☆".repeat(5 - value);
+  }
+
+  async function hasRecentReview(options: {
+    branchId: string;
+    productId?: string | null;
+    reviewType: "product" | "service";
+  }) {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    let query = supabase
+      .from("reviews")
+      .select("id")
+      .eq("branch_id", options.branchId)
+      .eq("device_id", getDeviceId())
+      .eq("review_type", options.reviewType)
+      .gte("created_at", sevenDaysAgo.toISOString())
+      .limit(1);
+
+    if (options.productId) {
+      query = query.eq("product_id", options.productId);
+    } else {
+      query = query.is("product_id", null);
+    }
+
+    const { data, error } = await query;
+
+    if (error) return false;
+
+    return (data || []).length > 0;
   }
 
   async function getTableData(branchId: string): Promise<TableData | null> {
@@ -221,16 +266,42 @@ export default function MenuPage() {
           price,
           image_url,
           active,
-          stock_quantity,
-          product_reviews (
-            rating
-          )
+          stock_quantity
         )
       `)
       .eq("branch_id", branchData.id)
       .order("sort_order", { ascending: true });
 
-    setCategories((categoriesData || []) as Category[]);
+    const { data: reviewsData } = await supabase
+      .from("reviews")
+      .select("product_id, review_type, rating")
+      .eq("branch_id", branchData.id);
+
+    const reviews = reviewsData || [];
+
+    const categoriesWithReviews = ((categoriesData || []) as Category[]).map(
+      (category) => ({
+        ...category,
+        products: (category.products || []).map((product) => ({
+          ...product,
+          reviews: reviews
+            .filter(
+              (review) =>
+                review.review_type === "product" &&
+                review.product_id === product.id
+            )
+            .map((review) => ({ rating: review.rating })),
+        })),
+      })
+    );
+
+    setServiceReviews(
+      reviews
+        .filter((review) => review.review_type === "service")
+        .map((review) => ({ rating: review.rating }))
+    );
+
+    setCategories(categoriesWithReviews);
     setLoading(false);
   }
 
@@ -408,20 +479,89 @@ export default function MenuPage() {
 
     if (!branch) return;
 
-    const { error } = await supabase.from("product_reviews").insert({
-      branch_id: branch.id,
-      product_id: productId,
-      device_id: getDeviceId(),
-      rating,
-      approved: true,
+    setReviewSending(productId);
+
+    const alreadyReviewed = await hasRecentReview({
+      branchId: branch.id,
+      productId,
+      reviewType: "product",
     });
 
-    if (error) {
-      setErrorMessage("سبق وقمت بتقييم هذا المنتج.");
+    if (alreadyReviewed) {
+      setReviewSending(null);
+      setErrorMessage("سبق وقمت بتقييم هذا المنتج خلال آخر 7 أيام.");
       return;
     }
 
-    setSuccessMessage("تم إرسال التقييم بنجاح.");
+    const { error } = await supabase.from("reviews").insert({
+      branch_id: branch.id,
+      product_id: productId,
+      review_type: "product",
+      device_id: getDeviceId(),
+      rating,
+    });
+
+    if (error) {
+      setReviewSending(null);
+      setErrorMessage(error.message || "فشل إرسال التقييم.");
+      return;
+    }
+
+    setCategories((currentCategories) =>
+      currentCategories.map((category) => ({
+        ...category,
+        products: category.products.map((product) =>
+          product.id === productId
+            ? {
+                ...product,
+                reviews: [...(product.reviews || []), { rating }],
+              }
+            : product
+        ),
+      }))
+    );
+
+    setReviewSending(null);
+    setSuccessMessage("تم إرسال تقييم المنتج بنجاح.");
+  }
+
+  async function submitServiceReview(rating: number) {
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    if (!branch) return;
+
+    setReviewSending("service");
+
+    const alreadyReviewed = await hasRecentReview({
+      branchId: branch.id,
+      productId: null,
+      reviewType: "service",
+    });
+
+    if (alreadyReviewed) {
+      setReviewSending(null);
+      setErrorMessage("سبق وقمت بتقييم الخدمة خلال آخر 7 أيام.");
+      return;
+    }
+
+    const { error } = await supabase.from("reviews").insert({
+      branch_id: branch.id,
+      product_id: null,
+      review_type: "service",
+      device_id: getDeviceId(),
+      rating,
+    });
+
+    if (error) {
+      setReviewSending(null);
+      setErrorMessage(error.message || "فشل إرسال تقييم الخدمة.");
+      return;
+    }
+
+    setServiceReviews((currentReviews) => [...currentReviews, { rating }]);
+    setReviewSending(null);
+    setSuccessMessage("تم إرسال تقييم الخدمة بنجاح.");
   }
 
   async function callWaiter() {
@@ -568,6 +708,8 @@ export default function MenuPage() {
     );
   }
 
+  const serviceAverage = getAverageRating(serviceReviews);
+
   return (
     <main
       className="min-h-screen p-6 pb-44 text-white"
@@ -613,6 +755,29 @@ export default function MenuPage() {
               </p>
             )}
 
+            <div className="mx-auto mt-5 max-w-xl rounded-3xl border border-white/10 bg-black/20 p-5">
+              <h2 className="font-black">تقييم الخدمة</h2>
+
+              {serviceAverage !== null ? (
+                <div className="mt-2 text-sm text-gray-300">
+                  ⭐ {serviceAverage.toFixed(1)}
+                  <span className="text-gray-500">
+                    {" "}
+                    ({serviceReviews.length} تقييم)
+                  </span>
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-gray-400">
+                  لا توجد تقييمات للخدمة حتى الآن.
+                </p>
+              )}
+
+              <RatingStars
+                disabled={reviewSending === "service"}
+                onRate={(rating) => submitServiceReview(rating)}
+              />
+            </div>
+
             {tableNumber && (
               <div>
                 <div
@@ -631,14 +796,43 @@ export default function MenuPage() {
                   </div>
                 </div>
 
-                <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(2, 1fr)",
+                    gap: "16px",
+                    marginTop: "24px",
+                  }}
+                >
+                  <a
+                    href="#products"
+                    className="rounded-3xl border border-emerald-400/30 bg-emerald-500/20 p-5 text-center font-black text-emerald-200 shadow-xl"
+                  >
+                    <div className="text-3xl">🛒</div>
+                    <div className="mt-2">طلب من المنيو</div>
+                    <div className="mt-1 text-xs">
+                      اختر المنتجات ثم أرسل الطلب
+                    </div>
+                  </a>
+
+                  <a
+                    href="#cart"
+                    className="rounded-3xl border border-purple-400/30 bg-purple-500/20 p-5 text-center font-black text-purple-200 shadow-xl"
+                  >
+                    <div className="text-3xl">🧺</div>
+                    <div className="mt-2">عرض السلة</div>
+                    <div className="mt-1 text-xs">
+                      راجع طلبك قبل الإرسال
+                    </div>
+                  </a>
+
                   <button
                     onClick={callWaiter}
                     className="rounded-3xl border border-blue-400/30 bg-blue-500/20 p-5 text-center font-black text-blue-200 shadow-xl"
                   >
                     <div className="text-3xl">🛎️</div>
                     <div className="mt-2">استدعاء نادل</div>
-                    <div className="mt-1 text-xs font-normal text-blue-200/70">
+                    <div className="mt-1 text-xs">
                       للمساعدة أو الطلب من الموظف
                     </div>
                   </button>
@@ -649,21 +843,10 @@ export default function MenuPage() {
                   >
                     <div className="text-3xl">💳</div>
                     <div className="mt-2">طلب الفاتورة</div>
-                    <div className="mt-1 text-xs font-normal text-yellow-200/70">
+                    <div className="mt-1 text-xs">
                       اطلب الحساب من الكاشير
                     </div>
                   </button>
-
-                  <a
-                    href="#products"
-                    className="rounded-3xl border border-emerald-400/30 bg-emerald-500/20 p-5 text-center font-black text-emerald-200 shadow-xl"
-                  >
-                    <div className="text-3xl">🛒</div>
-                    <div className="mt-2">طلب من المنيو</div>
-                    <div className="mt-1 text-xs font-normal text-emerald-200/70">
-                      اختر المنتجات ثم أرسل الطلب
-                    </div>
-                  </a>
                 </div>
               </div>
             )}
@@ -720,64 +903,78 @@ export default function MenuPage() {
                 <h2 className="mb-4 text-2xl font-black">{category.name}</h2>
 
                 <div className="space-y-4">
-                  {availableProducts.map((product) => (
-                    <div
-                      key={product.id}
-                      className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-xl"
-                    >
-                      {product.image_url && (
-                        <img
-                          src={product.image_url}
-                          alt={product.name}
-                          className="mb-4 h-64 w-full rounded-2xl object-cover"
-                        />
-                      )}
+                  {availableProducts.map((product) => {
+                    const productAverage = getAverageRating(product.reviews);
 
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <h3 className="text-xl font-black">{product.name}</h3>
+                    return (
+                      <div
+                        key={product.id}
+                        className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-xl"
+                      >
+                        {product.image_url && (
+                          <img
+                            src={product.image_url}
+                            alt={product.name}
+                            className="mb-4 h-64 w-full rounded-2xl object-cover"
+                          />
+                        )}
 
-                          {product.description && (
-                            <p className="mt-2 text-sm leading-7 text-gray-400">
-                              {product.description}
-                            </p>
-                          )}
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <h3 className="text-xl font-black">
+                              {product.name}
+                            </h3>
+
+                            {product.description && (
+                              <p className="mt-2 text-sm leading-7 text-gray-400">
+                                {product.description}
+                              </p>
+                            )}
+                          </div>
+
+                          <p
+                            className="shrink-0 font-black"
+                            style={{ color: primaryColor }}
+                          >
+                            {product.price} ريال
+                          </p>
                         </div>
 
-                        <p
-                          className="shrink-0 font-black"
-                          style={{ color: primaryColor }}
-                        >
-                          {product.price} ريال
-                        </p>
-                      </div>
-
-                      {product.product_reviews &&
-                        product.product_reviews.length > 0 && (
+                        {productAverage !== null ? (
                           <div className="mt-3 text-sm text-gray-300">
-                            ⭐{" "}
-                            {(
-                              product.product_reviews.reduce(
-                                (sum, review) => sum + review.rating,
-                                0
-                              ) / product.product_reviews.length
-                            ).toFixed(1)}
+                            ⭐ {productAverage.toFixed(1)}
                             <span className="text-gray-500">
                               {" "}
-                              ({product.product_reviews.length} تقييم)
+                              ({product.reviews?.length || 0} تقييم)
                             </span>
+                          </div>
+                        ) : (
+                          <div className="mt-3 text-sm text-gray-500">
+                            لا توجد تقييمات بعد
                           </div>
                         )}
 
-                      <button
-                        onClick={() => addToCart(product)}
-                        className="mt-5 w-full rounded-2xl px-5 py-4 font-black text-black"
-                        style={{ backgroundColor: primaryColor }}
-                      >
-                        أضف للسلة
-                      </button>
-                    </div>
-                  ))}
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3">
+                          <p className="mb-2 text-sm font-black text-gray-300">
+                            قيّم المنتج
+                          </p>
+
+                          <RatingStars
+                            disabled={reviewSending === product.id}
+                            onRate={(rating) => submitReview(product.id, rating)}
+                          />
+                        </div>
+
+                        <button
+                          onClick={() => addToCart(product)}
+                          className="mt-5 w-full rounded-2xl px-5 py-4 font-black text-black"
+                          style={{ backgroundColor: primaryColor }}
+                        >
+                          أضف للسلة
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             );
@@ -863,5 +1060,52 @@ export default function MenuPage() {
         </div>
       )}
     </main>
+  );
+}
+
+function RatingStars({
+  onRate,
+  disabled = false,
+}: {
+  onRate: (rating: number) => void;
+  disabled?: boolean;
+}) {
+  const [hoveredRating, setHoveredRating] = useState(0);
+
+  return (
+    <div className="mt-4 flex justify-center">
+      <div
+        className="flex items-center justify-center gap-1 rounded-2xl border px-4 py-3"
+        style={{
+          borderColor: "rgba(250,204,21,.35)",
+          background: "rgba(250,204,21,.10)",
+        }}
+      >
+        {[1, 2, 3, 4, 5].map((rating) => {
+          const isActive = hoveredRating >= rating;
+
+          return (
+            <button
+              key={rating}
+              type="button"
+              onClick={() => onRate(rating)}
+              onMouseEnter={() => setHoveredRating(rating)}
+              onMouseLeave={() => setHoveredRating(0)}
+              disabled={disabled}
+              className="text-3xl leading-none transition hover:scale-125 disabled:opacity-50"
+              style={{
+                color: isActive ? "#facc15" : "rgba(250,204,21,.45)",
+                textShadow: isActive
+                  ? "0 0 12px rgba(250,204,21,.45)"
+                  : "none",
+              }}
+              title={`${rating} من 5`}
+            >
+              ★
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

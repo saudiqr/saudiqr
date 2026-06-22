@@ -28,7 +28,7 @@ export default function DashboardSidebar({
         .sidebar-link:hover {
           background: rgba(16,185,129,0.16) !important;
           color: #10b981 !important;
-          box-shadow: 0 0 18px rgba(16,185,129,0.16) !important;
+          box-shadow: 0 0 10px rgba(16,185,129,0.16) !important;
         }
       `}</style>
 
@@ -40,10 +40,10 @@ export default function DashboardSidebar({
 
       <nav
         style={{
-          marginTop: "48px",
+          marginTop: "15px",
           display: "flex",
           flexDirection: "column",
-          gap: "14px",
+          gap: "1px",
         }}
       >
         <SideLink href="/dashboard" text="الرئيسية" icon="⌂" active={pathname === "/dashboard"} />
@@ -67,13 +67,13 @@ export default function DashboardSidebar({
 
       <button
         style={{
-          marginTop: "48px",
+          marginTop: "15px",
           width: "100%",
           background: "transparent",
           border: "0",
           color: "#ef4444",
           fontWeight: 900,
-          fontSize: "20px",
+          fontSize: "25px",
           textAlign: "right",
           cursor: "pointer",
         }}
@@ -113,7 +113,7 @@ function SideLink({
         fontSize: "16px",
         boxSizing: "border-box",
         transition: "0.2s",
-        boxShadow: active ? "0 0 18px rgba(16,185,129,0.16)" : "none",
+        boxShadow: active ? "0 0 10px rgba(16,185,129,0.16)" : "none",
       }}
     >
       <span>{text}</span>
