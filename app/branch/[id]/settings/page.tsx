@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import BranchLayout from "@/components/BranchLayout";
 
 type Settings = {
   id?: string;
@@ -36,7 +35,7 @@ type Settings = {
   whatsapp_number: string | null;
 };
 
-const defaultPrimaryColor = "#10b981";
+const defaultPrimaryColor = "#C68A3D";
 
 export default function BranchSettingsPage() {
   const params = useParams();
@@ -102,9 +101,7 @@ export default function BranchSettingsPage() {
 
     if (error) throw new Error(error.message);
 
-    const { data } = supabase.storage
-      .from("branch-assets")
-      .getPublicUrl(fileName);
+    const { data } = supabase.storage.from("branch-assets").getPublicUrl(fileName);
 
     return data.publicUrl;
   }
@@ -117,6 +114,7 @@ export default function BranchSettingsPage() {
       setMessage("");
       const url = await uploadFile(file, "logo");
       setSettings({ ...settings, logo_url: url });
+      setMessage("تم رفع الشعار. اضغط حفظ الإعدادات لتثبيت التغيير.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "حدث خطأ أثناء رفع الشعار");
     } finally {
@@ -132,6 +130,7 @@ export default function BranchSettingsPage() {
       setMessage("");
       const url = await uploadFile(file, "cover");
       setSettings({ ...settings, cover_url: url });
+      setMessage("تم رفع صورة الغلاف. اضغط حفظ الإعدادات لتثبيت التغيير.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "حدث خطأ أثناء رفع الغلاف");
     } finally {
@@ -195,242 +194,246 @@ export default function BranchSettingsPage() {
 
   if (!settings) {
     return (
-      <BranchLayout branchId={branchId}>
-        <div className="rounded-3xl bg-[#06140f] p-6 text-white">
-          جاري تحميل الإعدادات...
-        </div>
-      </BranchLayout>
+      <div dir="rtl" style={pageStyle}>
+        <section style={heroStyle}>
+          <p style={eyebrowStyle}>إعدادات المنيو</p>
+          <h1 style={heroTitleStyle}>إعدادات الفرع</h1>
+          <p style={heroTextStyle}>جاري تحميل الإعدادات...</p>
+        </section>
+      </div>
     );
   }
 
   return (
-    <BranchLayout branchId={branchId}>
-      <div className="space-y-8 text-white">
+    <div dir="rtl" style={pageStyle}>
+      <section style={heroStyle}>
         <div>
-          <h1 className="text-4xl font-black">إعدادات الفرع</h1>
-          <p className="mt-2 text-sm text-white/80">
-            تحكم في ظهور المنيو، بيانات التواصل، حالة الفرع، الضريبة، رسوم الخدمة، وأوقات العمل.
+          <p style={eyebrowStyle}>إدارة بيانات الفرع</p>
+          <h1 style={heroTitleStyle}>إعدادات الفرع</h1>
+          <p style={heroTextStyle}>
+            تحكم في المنيو، بيانات التواصل، حالة استقبال الطلبات، الضريبة، الرسوم، وأوقات العمل من مكان واحد.
           </p>
         </div>
+      </section>
 
-        <div className="grid gap-8 xl:grid-cols-[1fr_380px]">
-          <div className="space-y-6">
-            <SettingsBlock title="الهوية وبيانات المنيو">
-              <div className="grid gap-5 md:grid-cols-2">
-                <FileInput
-                  label="شعار المطعم"
-                  onChange={(file) => handleLogoUpload(file)}
-                />
+      <section style={miniStatsGridStyle}>
+        <MiniStat title="حالة الفرع" value={settings.is_open ? "مفتوح" : "مغلق"} />
+        <MiniStat title="الانشغال" value={settings.is_busy ? "مشغول" : "طبيعي"} />
+        <MiniStat title="الضريبة" value={settings.tax_enabled ? `${settings.tax_percentage}%` : "غير مفعلة"} />
+        <MiniStat title="واتساب" value={settings.whatsapp_notifications ? "مفعل" : "غير مفعل"} />
+      </section>
 
-                <FileInput
-                  label="صورة الغلاف"
-                  onChange={(file) => handleCoverUpload(file)}
-                />
-              </div>
+      <div style={workspaceStyle}>
+        <aside dir="rtl" style={sideColumnStyle}>
+          <PreviewCard settings={settings} />
+
+          {message ? (
+            <div
+              style={{
+                ...messageStyle,
+                border: message.includes("تم")
+                  ? "1px solid rgba(63,163,108,0.44)"
+                  : "1px solid rgba(201,79,79,0.44)",
+                background: message.includes("تم")
+                  ? "rgba(63,163,108,0.14)"
+                  : "rgba(201,79,79,0.14)",
+                color: message.includes("تم") ? "#B9F6CE" : "#ffb4b4",
+              }}
+            >
+              {message}
+            </div>
+          ) : null}
+
+          <button
+            onClick={saveSettings}
+            disabled={loading}
+            style={{
+              ...saveButtonStyle,
+              opacity: loading ? 0.65 : 1,
+              cursor: loading ? "not-allowed" : "pointer",
+            }}
+          >
+            {loading ? "جاري الحفظ..." : "حفظ الإعدادات"}
+          </button>
+        </aside>
+
+        <main dir="rtl" style={mainColumnStyle}>
+          <SettingsBlock title="الهوية" subtitle="الشعار، الغلاف، لون المنيو، ووصف المطعم.">
+            <div style={compactGridStyle}>
+              <FileInput label="شعار المطعم" onChange={(file) => handleLogoUpload(file)} />
+              <FileInput label="صورة الغلاف" onChange={(file) => handleCoverUpload(file)} />
 
               <div>
-                <label className="mb-2 block text-sm text-gray-300">لون المنيو الأساسي</label>
+                <label style={labelStyle}>لون المنيو الأساسي</label>
                 <input
                   type="color"
                   value={settings.primary_color}
-                  onChange={(e) =>
-                    setSettings({ ...settings, primary_color: e.target.value })
+                  onChange={(event) =>
+                    setSettings({ ...settings, primary_color: event.target.value })
                   }
-                  className="h-14 w-full rounded-2xl border border-white/10 bg-black/20 p-2"
+                  style={colorInputStyle}
                 />
               </div>
 
               <textarea
                 value={settings.description || ""}
-                onChange={(e) =>
-                  setSettings({ ...settings, description: e.target.value })
+                onChange={(event) =>
+                  setSettings({ ...settings, description: event.target.value })
                 }
                 placeholder="وصف المطعم"
-                className="min-h-32 w-full rounded-2xl border border-white/10 bg-black/20 p-4 outline-none placeholder:text-gray-500"
+                style={{ ...inputStyle, minHeight: "100px", resize: "vertical" }}
               />
-            </SettingsBlock>
+            </div>
+          </SettingsBlock>
 
-            <SettingsBlock title="بيانات التواصل">
-              <div className="grid gap-4 md:grid-cols-2">
-                <TextInput
-                  value={settings.phone || ""}
-                  onChange={(value) => setSettings({ ...settings, phone: value })}
-                  placeholder="رقم الجوال"
-                />
+          <SettingsBlock title="التواصل" subtitle="الأرقام والحسابات التي تظهر للعميل داخل المنيو.">
+            <div style={fourColumnStyle}>
+              <TextInput
+                value={settings.phone || ""}
+                onChange={(value) => setSettings({ ...settings, phone: value })}
+                placeholder="رقم الجوال"
+              />
 
-                <TextInput
-                  value={settings.whatsapp || ""}
-                  onChange={(value) => setSettings({ ...settings, whatsapp: value })}
-                  placeholder="رقم واتساب"
-                />
+              <TextInput
+                value={settings.whatsapp || ""}
+                onChange={(value) => setSettings({ ...settings, whatsapp: value })}
+                placeholder="رقم واتساب"
+              />
 
-                <TextInput
-                  value={settings.instagram || ""}
-                  onChange={(value) =>
-                    setSettings({ ...settings, instagram: value })
-                  }
-                  placeholder="حساب إنستغرام"
-                />
+              <TextInput
+                value={settings.instagram || ""}
+                onChange={(value) => setSettings({ ...settings, instagram: value })}
+                placeholder="إنستغرام"
+              />
 
-                <TextInput
-                  value={settings.snapchat || ""}
-                  onChange={(value) =>
-                    setSettings({ ...settings, snapchat: value })
-                  }
-                  placeholder="حساب سناب شات"
-                />
-              </div>
-            </SettingsBlock>
+              <TextInput
+                value={settings.snapchat || ""}
+                onChange={(value) => setSettings({ ...settings, snapchat: value })}
+                placeholder="سناب شات"
+              />
+            </div>
+          </SettingsBlock>
 
-            <SettingsBlock title="حالة استقبال الطلبات">
-              <div className="grid gap-4 md:grid-cols-2">
-                <ToggleCard
-                  title="الفرع مفتوح"
-                  description="إذا تم إيقافه لن يتم استقبال طلبات جديدة."
-                  checked={settings.is_open}
-                  onChange={(checked) =>
-                    setSettings({ ...settings, is_open: checked })
-                  }
-                />
+          <SettingsBlock title="استقبال الطلبات" subtitle="فتح الفرع، حالة الانشغال، وأوقات العمل.">
+            <div style={twoColumnStyle}>
+              <ToggleCard
+                title="الفرع مفتوح"
+                description="عند الإيقاف لن يستقبل الفرع طلبات جديدة."
+                checked={settings.is_open}
+                onChange={(checked) => setSettings({ ...settings, is_open: checked })}
+              />
 
-                <ToggleCard
-                  title="الفرع مشغول"
-                  description="يعرض للعميل أن الطلبات قد تتأخر."
-                  checked={settings.is_busy}
-                  onChange={(checked) =>
-                    setSettings({ ...settings, is_busy: checked })
-                  }
-                />
-              </div>
+              <ToggleCard
+                title="الفرع مشغول"
+                description="يعرض للعميل أن الطلبات قد تتأخر."
+                checked={settings.is_busy}
+                onChange={(checked) => setSettings({ ...settings, is_busy: checked })}
+              />
+            </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <TimeInput
-                  label="وقت الفتح"
-                  value={settings.open_time || ""}
-                  onChange={(value) =>
-                    setSettings({ ...settings, open_time: value })
-                  }
-                />
+            <div style={twoColumnStyle}>
+              <TimeInput
+                label="وقت الفتح"
+                value={settings.open_time || ""}
+                onChange={(value) => setSettings({ ...settings, open_time: value })}
+              />
 
-                <TimeInput
-                  label="وقت الإغلاق"
-                  value={settings.close_time || ""}
-                  onChange={(value) =>
-                    setSettings({ ...settings, close_time: value })
-                  }
-                />
-              </div>
-            </SettingsBlock>
+              <TimeInput
+                label="وقت الإغلاق"
+                value={settings.close_time || ""}
+                onChange={(value) => setSettings({ ...settings, close_time: value })}
+              />
+            </div>
+          </SettingsBlock>
 
-            <SettingsBlock title="الضريبة والرسوم">
-              <div className="grid gap-4 md:grid-cols-2">
-                <ToggleCard
-                  title="تفعيل الضريبة"
-                  description="استخدمها لو تبغى تظهر الضريبة في الطلب."
-                  checked={settings.tax_enabled}
-                  onChange={(checked) =>
-                    setSettings({ ...settings, tax_enabled: checked })
-                  }
-                />
+          <SettingsBlock title="الضريبة والرسوم" subtitle="المبالغ التي تضاف على الطلب داخل المنيو.">
+            <div style={billingGridStyle}>
+              <ToggleCard
+                title="تفعيل الضريبة"
+                description="إظهار الضريبة ضمن تفاصيل الطلب."
+                checked={settings.tax_enabled}
+                onChange={(checked) => setSettings({ ...settings, tax_enabled: checked })}
+              />
 
-                <NumberInput
-                  label="نسبة الضريبة %"
-                  value={settings.tax_percentage}
-                  onChange={(value) =>
-                    setSettings({ ...settings, tax_percentage: value })
-                  }
-                />
+              <NumberInput
+                label="نسبة الضريبة %"
+                value={settings.tax_percentage}
+                onChange={(value) => setSettings({ ...settings, tax_percentage: value })}
+              />
 
-                <ToggleCard
-                  title="تفعيل رسوم الخدمة"
-                  description="رسوم ثابتة تضاف على الطلب."
-                  checked={settings.service_fee_enabled}
-                  onChange={(checked) =>
-                    setSettings({ ...settings, service_fee_enabled: checked })
-                  }
-                />
+              <ToggleCard
+                title="رسوم الخدمة"
+                description="رسوم ثابتة تضاف على الطلب."
+                checked={settings.service_fee_enabled}
+                onChange={(checked) =>
+                  setSettings({ ...settings, service_fee_enabled: checked })
+                }
+              />
 
-                <NumberInput
-                  label="رسوم الخدمة بالريال"
-                  value={settings.service_fee}
-                  onChange={(value) =>
-                    setSettings({ ...settings, service_fee: value })
-                  }
-                />
+              <NumberInput
+                label="رسوم الخدمة"
+                value={settings.service_fee}
+                onChange={(value) => setSettings({ ...settings, service_fee: value })}
+              />
 
-                <NumberInput
-                  label="الحد الأدنى للطلب"
-                  value={settings.minimum_order}
-                  onChange={(value) =>
-                    setSettings({ ...settings, minimum_order: value })
-                  }
-                />
-              </div>
-            </SettingsBlock>
+              <NumberInput
+                label="الحد الأدنى للطلب"
+                value={settings.minimum_order}
+                onChange={(value) => setSettings({ ...settings, minimum_order: value })}
+              />
+            </div>
+          </SettingsBlock>
 
-            <SettingsBlock title="إشعارات واتساب">
-              <div className="grid gap-4 md:grid-cols-2">
-                <ToggleCard
-                  title="تفعيل إشعارات واتساب"
-                  description="لاحقًا نربطها بمزود واتساب رسمي."
-                  checked={settings.whatsapp_notifications}
-                  onChange={(checked) =>
-                    setSettings({
-                      ...settings,
-                      whatsapp_notifications: checked,
-                    })
-                  }
-                />
+          <SettingsBlock title="إشعارات واتساب" subtitle="تجهيز مسبق للربط لاحقًا مع مزود واتساب رسمي.">
+            <div style={twoColumnStyle}>
+              <ToggleCard
+                title="تفعيل إشعارات واتساب"
+                description="لاحقًا يتم ربطها كمزية مدفوعة."
+                checked={settings.whatsapp_notifications}
+                onChange={(checked) =>
+                  setSettings({ ...settings, whatsapp_notifications: checked })
+                }
+              />
 
-                <TextInput
-                  value={settings.whatsapp_number || ""}
-                  onChange={(value) =>
-                    setSettings({ ...settings, whatsapp_number: value })
-                  }
-                  placeholder="رقم استقبال التنبيهات"
-                />
-              </div>
-            </SettingsBlock>
-
-            {message && (
-              <div
-                className={`rounded-2xl p-4 font-bold ${
-                  message.includes("تم")
-                    ? "bg-emerald-500/20 text-emerald-300"
-                    : "bg-red-500/20 text-red-300"
-                }`}
-              >
-                {message}
-              </div>
-            )}
-
-            <button
-              onClick={saveSettings}
-              disabled={loading}
-              className="w-full rounded-2xl bg-emerald-500 px-6 py-4 font-black text-black transition hover:bg-emerald-400 disabled:opacity-60"
-            >
-              {loading ? "جاري الحفظ..." : "حفظ الإعدادات"}
-            </button>
-          </div>
-
-          <PreviewCard settings={settings} />
-        </div>
+              <TextInput
+                value={settings.whatsapp_number || ""}
+                onChange={(value) => setSettings({ ...settings, whatsapp_number: value })}
+                placeholder="رقم استقبال التنبيهات"
+              />
+            </div>
+          </SettingsBlock>
+        </main>
       </div>
-    </BranchLayout>
+    </div>
+  );
+}
+
+function MiniStat({ title, value }: { title: string; value: string }) {
+  return (
+    <div style={miniStatStyle}>
+      <p style={miniStatTitleStyle}>{title}</p>
+      <strong style={miniStatValueStyle}>{value}</strong>
+    </div>
   );
 }
 
 function SettingsBlock({
   title,
+  subtitle,
   children,
 }: {
   title: string;
+  subtitle: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-5 rounded-3xl border border-white/10 bg-[#06140f] p-6 shadow-2xl">
-      <h2 className="text-xl font-black">{title}</h2>
-      {children}
+    <section style={cardStyle}>
+      <div style={blockHeaderStyle}>
+        <h2 style={sectionTitleStyle}>{title}</h2>
+        <p style={sectionSubtitleStyle}>{subtitle}</p>
+      </div>
+
+      <div style={{ display: "grid", gap: "14px", marginTop: "16px" }}>{children}</div>
     </section>
   );
 }
@@ -447,9 +450,9 @@ function TextInput({
   return (
     <input
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
-      className="w-full rounded-2xl border border-white/10 bg-black/20 p-4 outline-none placeholder:text-gray-500"
+      style={inputStyle}
     />
   );
 }
@@ -465,14 +468,14 @@ function NumberInput({
 }) {
   return (
     <div>
-      <label className="mb-2 block text-sm text-gray-300">{label}</label>
+      <label style={labelStyle}>{label}</label>
       <input
         type="number"
         min="0"
         step="0.01"
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full rounded-2xl border border-white/10 bg-black/20 p-4 outline-none"
+        onChange={(event) => onChange(Number(event.target.value))}
+        style={inputStyle}
       />
     </div>
   );
@@ -489,12 +492,12 @@ function TimeInput({
 }) {
   return (
     <div>
-      <label className="mb-2 block text-sm text-gray-300">{label}</label>
+      <label style={labelStyle}>{label}</label>
       <input
         type="time"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-2xl border border-white/10 bg-black/20 p-4 outline-none"
+        onChange={(event) => onChange(event.target.value)}
+        style={inputStyle}
       />
     </div>
   );
@@ -509,12 +512,12 @@ function FileInput({
 }) {
   return (
     <div>
-      <label className="mb-2 block text-sm text-gray-300">{label}</label>
+      <label style={labelStyle}>{label}</label>
       <input
         type="file"
         accept="image/*"
-        onChange={(e) => onChange(e.target.files?.[0] || null)}
-        className="w-full rounded-2xl border border-white/10 bg-black/20 p-4 file:ml-4 file:rounded-xl file:border-0 file:bg-emerald-500 file:px-4 file:py-2 file:font-black file:text-black"
+        onChange={(event) => onChange(event.target.files?.[0] || null)}
+        style={fileInputStyle}
       />
     </div>
   );
@@ -535,27 +538,43 @@ function ToggleCard({
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className={`rounded-3xl border p-5 text-right transition ${
-        checked
-          ? "border-emerald-500 bg-emerald-500/15"
-          : "border-white/10 bg-black/20"
-      }`}
+      style={{
+        border: checked ? "1px solid rgba(198,138,61,0.58)" : "1px solid #4A3425",
+        background: checked ? "rgba(198,138,61,0.14)" : "#2A211C",
+        borderRadius: "24px",
+        padding: "17px",
+        textAlign: "right",
+        cursor: "pointer",
+        color: "#FFF8F0",
+      }}
     >
-      <div className="flex items-start justify-between gap-4">
+      <div style={toggleContentStyle}>
         <div>
-          <h3 className="font-black">{title}</h3>
-          <p className="mt-2 text-sm leading-6 text-gray-400">{description}</p>
+          <h3 style={toggleTitleStyle}>{title}</h3>
+          <p style={toggleDescriptionStyle}>{description}</p>
         </div>
 
         <span
-          className={`mt-1 h-6 w-11 rounded-full p-1 transition ${
-            checked ? "bg-emerald-500" : "bg-white/20"
-          }`}
+          style={{
+            width: "48px",
+            height: "26px",
+            borderRadius: "999px",
+            padding: "3px",
+            background: checked ? "#C68A3D" : "rgba(255,248,240,0.14)",
+            boxSizing: "border-box",
+            flexShrink: 0,
+          }}
         >
           <span
-            className={`block h-4 w-4 rounded-full bg-white transition ${
-              checked ? "translate-x-[-20px]" : "translate-x-0"
-            }`}
+            style={{
+              display: "block",
+              width: "20px",
+              height: "20px",
+              borderRadius: "999px",
+              background: checked ? "#16110E" : "#C8B6A4",
+              transform: checked ? "translateX(-22px)" : "translateX(0)",
+              transition: "0.2s",
+            }}
           />
         </span>
       </div>
@@ -565,74 +584,371 @@ function ToggleCard({
 
 function PreviewCard({ settings }: { settings: Settings }) {
   return (
-    <aside className="h-fit overflow-hidden rounded-3xl border border-white/10 bg-[#06140f] shadow-2xl">
+    <div style={previewStyle}>
       {settings.cover_url ? (
         <img
           src={settings.cover_url}
           alt="Cover"
-          className="h-48 w-full object-cover"
+          style={{ width: "100%", height: "140px", objectFit: "cover" }}
         />
       ) : (
-        <div className="flex h-48 items-center justify-center bg-black/20 text-gray-400">
-          صورة الغلاف
-        </div>
+        <div style={previewCoverPlaceholderStyle}>صورة الغلاف</div>
       )}
 
-      <div className="p-6 text-center">
+      <div style={{ padding: "20px", textAlign: "center" }}>
         {settings.logo_url ? (
-          <img
-            src={settings.logo_url}
-            alt="Logo"
-            className="mx-auto -mt-16 h-28 w-28 rounded-3xl border-4 border-[#06140f] bg-white object-contain p-2"
-          />
+          <img src={settings.logo_url} alt="Logo" style={previewLogoStyle} />
         ) : (
-          <div className="mx-auto -mt-16 flex h-28 w-28 items-center justify-center rounded-3xl border-4 border-[#06140f] bg-white text-sm font-black text-gray-500">
-            Logo
-          </div>
+          <div style={previewLogoPlaceholderStyle}>Logo</div>
         )}
 
-        <h2 className="mt-4 text-2xl font-black">معاينة المنيو</h2>
-        <p className="mt-2 text-sm leading-6 text-gray-400">
+        <h2 style={previewTitleStyle}>معاينة المنيو</h2>
+
+        <p style={previewDescriptionStyle}>
           {settings.description || "وصف المطعم يظهر هنا"}
         </p>
 
-        <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
-          <PreviewBadge
-            label={settings.is_open ? "مفتوح" : "مغلق"}
-            active={settings.is_open}
-          />
-          <PreviewBadge
-            label={settings.is_busy ? "مشغول" : "غير مشغول"}
-            active={!settings.is_busy}
-          />
+        <div style={previewBadgesGridStyle}>
+          <PreviewBadge label={settings.is_open ? "مفتوح" : "مغلق"} active={settings.is_open} />
+          <PreviewBadge label={settings.is_busy ? "مشغول" : "طبيعي"} active={!settings.is_busy} />
         </div>
 
-        <div className="mt-5 rounded-2xl bg-black/20 p-4 text-right text-sm text-gray-300">
-          <p>وقت العمل: {settings.open_time || "--"} إلى {settings.close_time || "--"}</p>
-          <p className="mt-2">الضريبة: {settings.tax_enabled ? `${settings.tax_percentage}%` : "غير مفعلة"}</p>
-          <p className="mt-2">رسوم الخدمة: {settings.service_fee_enabled ? `${settings.service_fee} ريال` : "غير مفعلة"}</p>
-          <p className="mt-2">الحد الأدنى: {settings.minimum_order || 0} ريال</p>
+        <div style={previewDetailsStyle}>
+          <p style={previewLineStyle}>وقت العمل: {settings.open_time || "--"} إلى {settings.close_time || "--"}</p>
+          <p style={previewLineStyle}>الضريبة: {settings.tax_enabled ? `${settings.tax_percentage}%` : "غير مفعلة"}</p>
+          <p style={previewLineStyle}>رسوم الخدمة: {settings.service_fee_enabled ? `${settings.service_fee} ريال` : "غير مفعلة"}</p>
+          <p style={previewLineStyle}>الحد الأدنى: {settings.minimum_order || 0} ريال</p>
         </div>
 
         <div
-          className="mt-6 rounded-2xl px-5 py-4 font-black text-black"
-          style={{ backgroundColor: settings.primary_color || defaultPrimaryColor }}
+          style={{
+            marginTop: "14px",
+            borderRadius: "18px",
+            padding: "16px",
+            fontWeight: 950,
+            color: "#16110E",
+            backgroundColor: settings.primary_color || defaultPrimaryColor,
+          }}
         >
           زر بلون المنيو
         </div>
       </div>
-    </aside>
+    </div>
   );
 }
 
 function PreviewBadge({ label, active }: { label: string; active: boolean }) {
   return (
     <div
-      className={`rounded-2xl px-3 py-3 font-black ${
-        active ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"
-      }`}
+      style={{
+        borderRadius: "16px",
+        padding: "11px 10px",
+        fontWeight: 950,
+        background: active ? "rgba(63,163,108,0.16)" : "rgba(201,79,79,0.14)",
+        color: active ? "#B9F6CE" : "#ffb4b4",
+        border: active ? "1px solid rgba(63,163,108,0.30)" : "1px solid rgba(201,79,79,0.30)",
+      }}
     >
       {label}
     </div>
   );
 }
+
+const pageStyle: React.CSSProperties = {
+  width: "100%",
+  minHeight: "100vh",
+  color: "#FFF8F0",
+  display: "grid",
+  gap: "16px",
+};
+
+const heroStyle: React.CSSProperties = {
+  background: "linear-gradient(135deg, #241B16, #1C1612)",
+  border: "1px solid #4A3425",
+  borderRadius: "30px",
+  padding: "22px",
+  boxShadow: "0 22px 70px rgba(0,0,0,0.28)",
+};
+
+const eyebrowStyle: React.CSSProperties = {
+  margin: "0 0 8px",
+  color: "#DEA54B",
+  fontWeight: 950,
+  fontSize: "18px",
+};
+
+const heroTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: "40px",
+  fontWeight: 950,
+  color: "#FFF8F0",
+};
+
+const heroTextStyle: React.CSSProperties = {
+  margin: "10px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "18px",
+  lineHeight: 1.8,
+};
+
+const miniStatsGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: "12px",
+};
+
+const miniStatStyle: React.CSSProperties = {
+  background: "#241B16",
+  border: "1px solid #4A3425",
+  borderRadius: "26px",
+  padding: "17px",
+  boxShadow: "0 16px 48px rgba(0,0,0,0.22)",
+};
+
+const miniStatTitleStyle: React.CSSProperties = {
+  margin: 0,
+  color: "#C8B6A4",
+  fontWeight: 950,
+  fontSize: "18px",
+};
+
+const miniStatValueStyle: React.CSSProperties = {
+  display: "block",
+  marginTop: "8px",
+  color: "#FFF8F0",
+  fontSize: "26px",
+  fontWeight: 950,
+};
+
+const workspaceStyle: React.CSSProperties = {
+  direction: "ltr",
+  display: "grid",
+  gridTemplateColumns: "360px minmax(0, 1fr)",
+  gap: "16px",
+  alignItems: "start",
+};
+
+const sideColumnStyle: React.CSSProperties = {
+  display: "grid",
+  gap: "14px",
+  position: "sticky",
+  top: "16px",
+};
+
+const mainColumnStyle: React.CSSProperties = {
+  display: "grid",
+  gap: "14px",
+};
+
+const cardStyle: React.CSSProperties = {
+  background: "#241B16",
+  border: "1px solid #4A3425",
+  borderRadius: "28px",
+  padding: "20px",
+  boxShadow: "0 18px 55px rgba(0,0,0,0.24)",
+};
+
+const blockHeaderStyle: React.CSSProperties = {
+  borderBottom: "1px solid rgba(74,52,37,0.85)",
+  paddingBottom: "12px",
+};
+
+const sectionTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: "26px",
+  fontWeight: 950,
+  color: "#FFF8F0",
+};
+
+const sectionSubtitleStyle: React.CSSProperties = {
+  margin: "6px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "18px",
+  lineHeight: 1.7,
+};
+
+const compactGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: "12px",
+};
+
+const twoColumnStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: "12px",
+};
+
+const fourColumnStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: "12px",
+};
+
+const billingGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1.15fr 0.85fr 1.15fr 0.85fr 0.85fr",
+  gap: "12px",
+  alignItems: "stretch",
+};
+
+const labelStyle: React.CSSProperties = {
+  display: "block",
+  marginBottom: "7px",
+  color: "#C8B6A4",
+  fontWeight: 900,
+  fontSize: "18px",
+};
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  border: "1px solid #4A3425",
+  borderRadius: "18px",
+  padding: "16px",
+  outline: "none",
+  background: "#2A211C",
+  color: "#FFF8F0",
+  fontWeight: 850,
+  fontSize: "18px",
+  boxSizing: "border-box",
+};
+
+const fileInputStyle: React.CSSProperties = {
+  ...inputStyle,
+  cursor: "pointer",
+};
+
+const colorInputStyle: React.CSSProperties = {
+  width: "100%",
+  height: "56px",
+  border: "1px solid #4A3425",
+  borderRadius: "18px",
+  padding: "6px",
+  outline: "none",
+  background: "#2A211C",
+  boxSizing: "border-box",
+  cursor: "pointer",
+};
+
+const toggleContentStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: "12px",
+};
+
+const toggleTitleStyle: React.CSSProperties = {
+  margin: 0,
+  color: "#FFF8F0",
+  fontWeight: 950,
+  fontSize: "18px",
+};
+
+const toggleDescriptionStyle: React.CSSProperties = {
+  margin: "7px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "18px",
+  lineHeight: 1.65,
+};
+
+const previewStyle: React.CSSProperties = {
+  overflow: "hidden",
+  borderRadius: "28px",
+  background: "#241B16",
+  border: "1px solid #4A3425",
+  boxShadow: "0 18px 55px rgba(0,0,0,0.24)",
+};
+
+const previewCoverPlaceholderStyle: React.CSSProperties = {
+  height: "140px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "#2A211C",
+  color: "#C8B6A4",
+  fontWeight: 950,
+};
+
+const previewLogoStyle: React.CSSProperties = {
+  width: "94px",
+  height: "94px",
+  objectFit: "contain",
+  borderRadius: "26px",
+  border: "4px solid #16110E",
+  background: "#2A211C",
+  padding: "8px",
+  margin: "-62px auto 0",
+  display: "block",
+};
+
+const previewLogoPlaceholderStyle: React.CSSProperties = {
+  width: "94px",
+  height: "94px",
+  borderRadius: "26px",
+  border: "4px solid #16110E",
+  background: "#2A211C",
+  color: "#C8B6A4",
+  fontWeight: 950,
+  margin: "-62px auto 0",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+
+const previewTitleStyle: React.CSSProperties = {
+  margin: "14px 0 0",
+  color: "#FFF8F0",
+  fontSize: "26px",
+  fontWeight: 950,
+};
+
+const previewDescriptionStyle: React.CSSProperties = {
+  margin: "8px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  lineHeight: 1.7,
+  fontSize: "18px",
+};
+
+const previewBadgesGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, 1fr)",
+  gap: "9px",
+  marginTop: "14px",
+};
+
+const previewDetailsStyle: React.CSSProperties = {
+  marginTop: "14px",
+  borderRadius: "18px",
+  background: "#2A211C",
+  border: "1px solid #4A3425",
+  padding: "13px",
+  textAlign: "right",
+};
+
+const previewLineStyle: React.CSSProperties = {
+  margin: "7px 0",
+  color: "#C8B6A4",
+  fontWeight: 850,
+  fontSize: "18px",
+};
+
+const messageStyle: React.CSSProperties = {
+  borderRadius: "20px",
+  padding: "16px",
+  fontWeight: 950,
+};
+
+const saveButtonStyle: React.CSSProperties = {
+  border: "0",
+  borderRadius: "22px",
+  padding: "17px 22px",
+  background: "linear-gradient(135deg, #C68A3D, #DEA54B)",
+  color: "#16110E",
+  fontWeight: 950,
+  fontSize: "18px",
+  boxShadow: "0 16px 30px rgba(198,138,61,0.20)",
+};

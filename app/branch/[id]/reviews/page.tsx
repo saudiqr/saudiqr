@@ -3,468 +3,842 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import BranchPageHeader from "@/components/BranchPageHeader";
-import BranchLayout from "@/components/BranchLayout";
-
-type Order = {
-  id: string;
-  status: string;
-  total: number | null;
-  created_at: string;
-};
 
 type Review = {
+  id: string;
+  branch_id: string;
+  product_id: string | null;
   rating: number;
-};
-
-type ActivityLog = {
-  activity_type: string;
-};
-
-type OrderItem = {
-  quantity: number;
+  comment: string | null;
+  approved: boolean | null;
+  seen_by_owner?: boolean | null;
+  created_at: string;
   products: {
     name: string;
   } | null;
 };
 
-type DailyOrder = {
-  date: string;
+type RatingFilter = "all" | "5" | "4" | "3" | "2" | "1";
+
+type BreakdownItem = {
+  section: string;
   count: number;
 };
 
-type TopProduct = {
-  name: string;
-  quantity: number;
-};
+const filters: { label: string; value: RatingFilter }[] = [
+  { label: "الكل", value: "all" },
+  { label: "5 نجوم", value: "5" },
+  { label: "4 نجوم", value: "4" },
+  { label: "3 نجوم", value: "3" },
+  { label: "2 نجوم", value: "2" },
+  { label: "1 نجمة", value: "1" },
+];
 
-type Stats = {
-  menuOpened: number;
-  cartStarted: number;
-  totalOrders: number;
-  conversionRate: number;
-  totalSales: number;
-  averageRating: number;
-  reviewsCount: number;
-  waiterCalls: number;
-  billRequests: number;
-  newOrders: number;
-  preparingOrders: number;
-  readyOrders: number;
-  deliveredOrders: number;
-  topProducts: TopProduct[];
-  dailyOrders: DailyOrder[];
-};
-
-export default function StatsPage() {
+export default function ReviewsPage() {
   const params = useParams();
   const branchId = params.id as string;
 
+  const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<RatingFilter>("all");
+  const [message, setMessage] = useState("");
 
-  const [stats, setStats] = useState<Stats>({
-    menuOpened: 0,
-    cartStarted: 0,
-    totalOrders: 0,
-    conversionRate: 0,
-    totalSales: 0,
-    averageRating: 0,
-    reviewsCount: 0,
-    waiterCalls: 0,
-    billRequests: 0,
-    newOrders: 0,
-    preparingOrders: 0,
-    readyOrders: 0,
-    deliveredOrders: 0,
-    topProducts: [],
-    dailyOrders: [],
-  });
+  const filteredReviews =
+    filter === "all"
+      ? reviews
+      : reviews.filter((review) => Number(review.rating) === Number(filter));
 
-  const maxDailyOrders = useMemo(() => {
-    return Math.max(...stats.dailyOrders.map((day) => day.count), 1);
-  }, [stats.dailyOrders]);
+  const totalReviews = reviews.length;
 
-  async function loadStats() {
-    setLoading(true);
+  const averageRating = useMemo(() => {
+    if (reviews.length === 0) return 0;
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 29);
-    startDate.setHours(0, 0, 0, 0);
-
-    const [
-      ordersResult,
-      waiterCallsResult,
-      billRequestsResult,
-      reviewsResult,
-      activityLogsResult,
-      orderItemsResult,
-    ] = await Promise.all([
-      supabase
-        .from("orders")
-        .select("id,status,total,created_at")
-        .eq("branch_id", branchId),
-
-      supabase
-        .from("waiter_calls")
-        .select("id", { count: "exact" })
-        .eq("branch_id", branchId),
-
-      supabase
-        .from("bill_requests")
-        .select("id", { count: "exact" })
-        .eq("branch_id", branchId),
-
-      supabase.from("reviews").select("rating").eq("branch_id", branchId),
-
-      supabase
-        .from("table_activity_logs")
-        .select("activity_type")
-        .eq("branch_id", branchId),
-
-      supabase
-        .from("order_items")
-        .select(`
-          quantity,
-          products (
-            name
-          ),
-          orders!inner (
-            branch_id
-          )
-        `)
-        .eq("orders.branch_id", branchId),
-    ]);
-
-    const orders = (ordersResult.data || []) as Order[];
-    const reviews = (reviewsResult.data || []) as Review[];
-    const activityLogs = (activityLogsResult.data || []) as ActivityLog[];
-    const orderItems = (orderItemsResult.data || []) as unknown as OrderItem[];
-
-    const totalOrders = orders.length;
-
-    const totalSales = orders.reduce(
-      (sum, order) => sum + Number(order.total || 0),
+    const total = reviews.reduce(
+      (sum, review) => sum + Number(review.rating || 0),
       0
     );
 
-    const menuOpened = activityLogs.filter(
-      (log) => log.activity_type === "menu_opened"
-    ).length;
+    return total / reviews.length;
+  }, [reviews]);
 
-    const cartStarted = activityLogs.filter(
-      (log) => log.activity_type === "cart_started"
-    ).length;
+  const fiveStars = reviews.filter((review) => review.rating === 5).length;
+  const lowRatings = reviews.filter((review) => review.rating <= 2).length;
+  const newReviews = reviews.filter(
+    (review) => review.seen_by_owner === false
+  ).length;
 
-    const reviewsCount = reviews.length;
+  const latestReviewMinutes = reviews.length
+    ? getWaitingMinutes(reviews[0].created_at)
+    : 0;
 
-    const averageRating =
-      reviewsCount > 0
-        ? reviews.reduce((sum, review) => sum + review.rating, 0) /
-          reviewsCount
-        : 0;
+  const ratingBreakdown: BreakdownItem[] = [5, 4, 3, 2, 1]
+    .map((rating) => ({
+      section: `${rating} نجوم`,
+      count: reviews.filter((review) => review.rating === rating).length,
+    }))
+    .filter((item) => item.count > 0);
 
-    const conversionRate =
-      menuOpened > 0 ? Math.round((totalOrders / menuOpened) * 100) : 0;
+  async function loadReviews() {
+    setLoading(true);
+    setMessage("");
 
-    const productMap = new Map<string, number>();
+    const { data, error } = await supabase
+      .from("product_reviews")
+      .select(`
+        id,
+        branch_id,
+        product_id,
+        rating,
+        comment,
+        approved,
+        seen_by_owner,
+        created_at,
+        products (
+          name
+        )
+      `)
+      .eq("branch_id", branchId)
+      .order("created_at", { ascending: false });
 
-    orderItems.forEach((item) => {
-      const name = item.products?.name || "منتج غير معروف";
-      const quantity = Number(item.quantity || 0);
-      productMap.set(name, (productMap.get(name) || 0) + quantity);
-    });
-
-    const topProducts = Array.from(productMap.entries())
-      .map(([name, quantity]) => ({ name, quantity }))
-      .sort((a, b) => b.quantity - a.quantity)
-      .slice(0, 5);
-
-    const dailyOrders: DailyOrder[] = [];
-
-    for (let index = 0; index < 30; index++) {
-      const date = new Date(startDate);
-      date.setDate(startDate.getDate() + index);
-
-      const key = date.toISOString().slice(0, 10);
-
-      const count = orders.filter((order) =>
-        order.created_at?.startsWith(key)
-      ).length;
-
-      dailyOrders.push({
-        date: key,
-        count,
-      });
+    if (error) {
+      setMessage(error.message);
+      setReviews([]);
+      setLoading(false);
+      return;
     }
 
-    setStats({
-      menuOpened,
-      cartStarted,
-      totalOrders,
-      conversionRate,
-      totalSales,
-      averageRating,
-      reviewsCount,
-      waiterCalls: waiterCallsResult.count || 0,
-      billRequests: billRequestsResult.count || 0,
-      newOrders: orders.filter((order) => order.status === "new").length,
-      preparingOrders: orders.filter((order) => order.status === "preparing")
-        .length,
-      readyOrders: orders.filter((order) => order.status === "ready").length,
-      deliveredOrders: orders.filter((order) => order.status === "delivered")
-        .length,
-      topProducts,
-      dailyOrders,
+    setReviews((data || []) as unknown as Review[]);
+    setLoading(false);
+  }
+
+  async function markReviewsAsSeen() {
+    await supabase
+      .from("product_reviews")
+      .update({ seen_by_owner: true })
+      .eq("branch_id", branchId)
+      .eq("seen_by_owner", false);
+  }
+
+  async function deleteReview(reviewId: string) {
+    const confirmed = window.confirm("هل تريد حذف هذا التقييم؟");
+
+    if (!confirmed) return;
+
+    setMessage("");
+
+    const { error } = await supabase
+      .from("product_reviews")
+      .delete()
+      .eq("id", reviewId);
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    await loadReviews();
+  }
+
+  async function toggleApproved(review: Review) {
+    setMessage("");
+
+    const { error } = await supabase
+      .from("product_reviews")
+      .update({ approved: !Boolean(review.approved) })
+      .eq("id", review.id);
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    await loadReviews();
+  }
+
+  async function reportReview(reviewId: string) {
+    setMessage("");
+
+    const reason = window.prompt(
+      "سبب البلاغ",
+      "تقييم غير مناسب أو قد يكون من منافس"
+    );
+
+    if (!reason) return;
+
+    const { error } = await supabase.from("review_reports").insert({
+      review_id: reviewId,
+      reason,
     });
 
-    setLoading(false);
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    setMessage("تم إرسال البلاغ للإدارة.");
   }
 
   useEffect(() => {
     if (!branchId) return;
 
-    loadStats();
+    loadReviews().then(() => {
+      markReviewsAsSeen();
+    });
 
-    const ordersChannel = supabase
-      .channel(`stats-orders-${branchId}`)
+    const channel = supabase
+      .channel(`reviews-${branchId}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
-          table: "orders",
+          table: "product_reviews",
           filter: `branch_id=eq.${branchId}`,
         },
-        () => loadStats()
-      )
-      .subscribe();
-
-    const reviewsChannel = supabase
-      .channel(`stats-reviews-${branchId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "reviews",
-          filter: `branch_id=eq.${branchId}`,
-        },
-        () => loadStats()
+        () => {
+          loadReviews();
+        }
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(ordersChannel);
-      supabase.removeChannel(reviewsChannel);
+      supabase.removeChannel(channel);
     };
   }, [branchId]);
 
   if (loading) {
     return (
-      <BranchLayout branchId={branchId}>
-        <main className="min-h-screen bg-[#10b981] p-6 text-white md:p-8">
-          جاري تحميل الإحصائيات...
-        </main>
-      </BranchLayout>
+      <div dir="rtl" style={pageStyle}>
+        <section style={heroStyle}>
+          <div>
+            <p style={eyebrowStyle}></p>
+            <h1 style={heroTitleStyle}>التقييمات</h1>
+            <p style={heroTextStyle}>جاري تحميل التقييمات...</p>
+          </div>
+
+          <div style={liveBadgeStyle}></div>
+        </section>
+      </div>
     );
   }
 
   return (
-    <BranchLayout branchId={branchId}>
-      <main className="min-h-screen bg-[#10b981] p-4 text-white md:p-8">
-        <div className="mx-auto max-w-7xl">
-          <BranchPageHeader
-            title="إحصائيات الفرع"
-            description="تحليل أداء الفرع، الطلبات، الزوار، التقييمات، وأفضل المنتجات."
-            branchId={branchId}
-          />
-
-          <section className="mt-8 grid grid-cols-1 gap-5 lg:grid-cols-3">
-            <TopProductsCard products={stats.topProducts} />
-            <ConversionCard
-              menuOpened={stats.menuOpened}
-              cartStarted={stats.cartStarted}
-              totalOrders={stats.totalOrders}
-              billRequests={stats.billRequests}
-            />
-            <DailyOrdersCard
-              dailyOrders={stats.dailyOrders}
-              maxDailyOrders={maxDailyOrders}
-            />
-          </section>
-
-          <section className="mt-5 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-            <StatCard title="👁️ فتح المنيو" value={stats.menuOpened} />
-            <StatCard title="🛒 بدأ الطلب" value={stats.cartStarted} />
-            <StatCard title="✅ إجمالي الطلبات" value={stats.totalOrders} />
-            <StatCard title="📈 معدل التحويل" value={`${stats.conversionRate}%`} />
-            <StatCard
-              title="💰 إجمالي المبيعات"
-              value={`${stats.totalSales.toFixed(0)} ريال`}
-            />
-            <StatCard
-              title="⭐ متوسط التقييم"
-              value={
-                stats.reviewsCount > 0
-                  ? `${stats.averageRating.toFixed(1)} / 5`
-                  : "—"
-              }
-            />
-          </section>
-
-          <section className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-            <StatCard title="🛎️ استدعاء النادل" value={stats.waiterCalls} />
-            <StatCard title="💳 طلب الفاتورة" value={stats.billRequests} />
-            <StatCard title="طلبات جديدة" value={stats.newOrders} />
-            <StatCard title="جاري التحضير" value={stats.preparingOrders} />
-            <StatCard title="جاهز" value={stats.readyOrders} />
-            <StatCard title="تم التسليم" value={stats.deliveredOrders} />
-          </section>
+    <div dir="rtl" style={pageStyle}>
+      <section style={heroStyle}>
+        <div>
+          <p style={eyebrowStyle}></p>
+          <h1 style={heroTitleStyle}>التقييمات</h1>
+          <p style={heroTextStyle}>
+            تابع تقييمات المنتجات والخدمة، وراقب جودة تجربة العميل بشكل مباشر.
+          </p>
         </div>
-      </main>
-    </BranchLayout>
-  );
-}
 
-function TopProductsCard({ products }: { products: TopProduct[] }) {
-  return (
-    <div className="h-[280px] overflow-hidden rounded-[28px] border border-white/20 bg-[#06140f] p-6 text-white shadow-2xl">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-black md:text-2xl">
-          🔥 أكثر المنتجات طلبًا
-        </h2>
-        <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-gray-300">
-          Top 5
-        </span>
-      </div>
+      </section>
 
-      {products.length === 0 ? (
-        <p className="mt-8 text-sm text-gray-400">لا توجد بيانات منتجات بعد.</p>
-      ) : (
-        <div className="mt-5 space-y-3">
-          {products.slice(0, 4).map((product, index) => (
-            <div
-              key={product.name}
-              className="flex items-center justify-between rounded-2xl bg-white/[0.06] p-3"
+      <section style={statsGridStyle}>
+        <StatCard
+          title="إجمالي التقييمات"
+          value={totalReviews}
+          icon="⭐"
+          breakdown={ratingBreakdown}
+        />
+
+        <StatCard
+          title="متوسط التقييم"
+          value={totalReviews > 0 ? `${averageRating.toFixed(1)} / 5` : "—"}
+          icon="📊"
+          breakdown={ratingBreakdown}
+        />
+
+        <StatCard
+          title="5 نجوم"
+          value={fiveStars}
+          icon="🏆"
+          breakdown={[{ section: "تقييم ممتاز", count: fiveStars }]}
+        />
+
+        <StatCard
+          title="تقييمات منخفضة"
+          value={lowRatings}
+          icon="⚠️"
+          breakdown={[{ section: "1-2 نجوم", count: lowRatings }]}
+        />
+
+        <StatCard
+          title="أحدث تقييم"
+          value={reviews.length ? `${latestReviewMinutes} د` : "0 د"}
+          icon="⚡"
+          breakdown={
+            reviews.length
+              ? [{ section: "آخر تقييم", count: latestReviewMinutes }]
+              : []
+          }
+        />
+
+        <StatCard
+          title="تقييمات جديدة"
+          value={newReviews}
+          icon="🔴"
+          breakdown={[{ section: "غير مقروءة", count: newReviews }]}
+        />
+      </section>
+
+      <section style={filterCardStyle}>
+        <div>
+          <h2 style={sectionTitleStyle}>تصفية التقييمات</h2>
+          <p style={sectionSubtitleStyle}>
+            اعرض التقييمات حسب عدد النجوم لمتابعة جودة المنتجات والخدمة.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+          {filters.map((item) => (
+            <FilterButton
+              key={item.value}
+              active={filter === item.value}
+              onClick={() => setFilter(item.value)}
             >
-              <div className="min-w-0">
-                <p className="truncate font-black">
-                  {index + 1}- {product.name}
-                </p>
-                <p className="mt-1 text-xs text-gray-400">إجمالي الكمية</p>
-              </div>
-
-              <span className="shrink-0 rounded-full bg-emerald-500/20 px-4 py-2 font-black text-emerald-300">
-                {product.quantity}
-              </span>
-            </div>
+              {item.label}
+            </FilterButton>
           ))}
         </div>
-      )}
-    </div>
-  );
-}
+      </section>
 
-function ConversionCard({
-  menuOpened,
-  cartStarted,
-  totalOrders,
-  billRequests,
-}: {
-  menuOpened: number;
-  cartStarted: number;
-  totalOrders: number;
-  billRequests: number;
-}) {
-  const max = Math.max(menuOpened, cartStarted, totalOrders, billRequests, 1);
+      {message ? (
+        <div
+          style={{
+            ...errorStyle,
+            border: message.includes("تم")
+              ? "1px solid #4A3425"
+              : "1px solid rgba(239,68,68,0.35)",
+            background: message.includes("تم")
+              ? "rgba(16,185,129,0.14)"
+              : "rgba(239,68,68,0.14)",
+            color: message.includes("تم") ? "#DEA54B" : "#fca5a5",
+          }}
+        >
+          {message}
+        </div>
+      ) : null}
 
-  return (
-    <div className="h-[280px] overflow-hidden rounded-[28px] border border-white/20 bg-[#06140f] p-6 text-white shadow-2xl">
-      <h2 className="text-xl font-black md:text-2xl">📊 ملخص التحويل</h2>
-
-      <div className="mt-6 space-y-4">
-        <ProgressRow title="فتح المنيو" value={menuOpened} max={max} />
-        <ProgressRow title="بدأ الطلب" value={cartStarted} max={max} />
-        <ProgressRow title="أرسل طلب" value={totalOrders} max={max} />
-        <ProgressRow title="طلب الفاتورة" value={billRequests} max={max} />
-      </div>
-    </div>
-  );
-}
-
-function DailyOrdersCard({
-  dailyOrders,
-  maxDailyOrders,
-}: {
-  dailyOrders: DailyOrder[];
-  maxDailyOrders: number;
-}) {
-  return (
-    <div className="h-[280px] overflow-hidden rounded-[28px] border border-white/20 bg-[#06140f] p-6 text-white shadow-2xl">
-      <h2 className="text-xl font-black md:text-2xl">
-        📈 الطلبات آخر 30 يوم
-      </h2>
-
-      <div className="mt-8 flex h-36 items-end gap-1 border-b border-white/10 pb-3">
-        {dailyOrders.map((day) => (
-          <div
-            key={day.date}
-            className="flex flex-1 flex-col items-center justify-end gap-2"
-          >
-            <div
-              className="w-full rounded-t-lg bg-emerald-400"
-              style={{
-                height: `${Math.max(
-                  (day.count / maxDailyOrders) * 100,
-                  day.count > 0 ? 8 : 0
-                )}%`,
-              }}
-              title={`${day.date}: ${day.count} طلب`}
-            />
-
-            <span className="text-[8px] text-gray-500">
-              {new Date(day.date).getDate()}
-            </span>
+      <section style={cardStyle}>
+        <div style={sectionHeaderStyle}>
+          <div>
+            <h2 style={sectionTitleStyle}>قائمة التقييمات</h2>
+            <p style={sectionSubtitleStyle}>
+              كل تقييم يظهر مع المنتج، النجوم، التعليق، وحالة الظهور.
+            </p>
           </div>
-        ))}
-      </div>
+
+          <span style={sectionBadgeStyle}>
+            {filteredReviews.length} تقييم معروض
+          </span>
+        </div>
+
+        {filteredReviews.length === 0 ? (
+          <div style={emptyStyle}>لا توجد تقييمات في هذا التصنيف.</div>
+        ) : (
+          <div style={reviewsGridStyle}>
+            {filteredReviews.map((review) => {
+              const config = getRatingConfig(review.rating);
+              const minutes = getWaitingMinutes(review.created_at);
+
+              return (
+                <article
+                  key={review.id}
+                  style={{
+                    ...reviewCardStyle,
+                    border: `1px solid ${config.border}`,
+                  }}
+                >
+                  <div style={reviewHeaderStyle}>
+                    <div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "10px",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: "12px",
+                            height: "12px",
+                            borderRadius: "999px",
+                            background: config.dot,
+                            boxShadow: `0 0 12px ${config.dot}`,
+                          }}
+                        />
+
+                        <h3 style={productTitleStyle}>
+                          {review.products?.name || "تقييم عام"}
+                        </h3>
+                      </div>
+
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          marginTop: "12px",
+                          borderRadius: "999px",
+                          padding: "8px 12px",
+                          background: config.bg,
+                          color: config.color,
+                          border: `1px solid ${config.border}`,
+                          fontWeight: 950,
+                          fontSize: "13px",
+                        }}
+                      >
+                        {config.label}
+                      </span>
+
+                      <p style={mutedTextStyle}>⏱️ منذ {minutes} دقيقة</p>
+                    </div>
+
+                    <span style={ratingBadgeStyle}>{review.rating} ⭐</span>
+                  </div>
+
+                  <div style={commentBoxStyle}>
+                    {review.comment || "لا يوجد تعليق مكتوب."}
+                  </div>
+
+                  <div style={statusBoxStyle}>
+                    <span>حالة الظهور</span>
+                    <strong
+                      style={{
+                        color:
+                          review.approved === false ? "#fca5a5" : "#DEA54B",
+                      }}
+                    >
+                      {review.approved === false ? "مخفي" : "ظاهر"}
+                    </strong>
+                  </div>
+
+                  <div style={actionsGridStyle}>
+                    <button
+                      onClick={() => toggleApproved(review)}
+                      style={secondaryButtonStyle}
+                    >
+                      {review.approved === false ? "إظهار" : "إخفاء"}
+                    </button>
+
+                    <button
+                      onClick={() => reportReview(review.id)}
+                      style={warningButtonStyle}
+                    >
+                      بلاغ
+                    </button>
+
+                    <button
+                      onClick={() => deleteReview(review.id)}
+                      style={dangerButtonStyle}
+                    >
+                      حذف
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
 
-function StatCard({ title, value }: { title: string; value: string | number }) {
+function getWaitingMinutes(date: string) {
+  return Math.max(1, Math.floor((Date.now() - new Date(date).getTime()) / 60000));
+}
+
+function getRatingConfig(rating: number) {
+  if (rating <= 2) {
+    return {
+      label: "منخفض",
+      bg: "rgba(239,68,68,0.14)",
+      color: "#fca5a5",
+      border: "rgba(239,68,68,0.34)",
+      dot: "#f87171",
+    };
+  }
+
+  if (rating === 3) {
+    return {
+      label: "متوسط",
+      bg: "rgba(245,158,11,0.14)",
+      color: "#fde68a",
+      border: "rgba(245,158,11,0.34)",
+      dot: "#fbbf24",
+    };
+  }
+
+  return {
+    label: "ممتاز",
+    bg: "rgba(198,138,61,0.12)",
+    color: "#DEA54B",
+    border: "#4A3425",
+    dot: "#34d399",
+  };
+}
+
+function FilterButton({
+  children,
+  active,
+  onClick,
+}: {
+  children: React.ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
-    <div className="flex h-[150px] flex-col justify-between rounded-[24px] border border-white/20 bg-[#06140f] p-4 text-white shadow-xl transition hover:-translate-y-1 hover:bg-[#071b14] md:p-5">
-      <p className="text-sm leading-6 text-gray-400">{title}</p>
-      <h2 className="break-words text-2xl font-black">{value}</h2>
-    </div>
+    <button
+      onClick={onClick}
+      style={{
+        border: active
+          ? "1px solid rgba(16,185,129,0.75)"
+          : "1px solid #4A3425",
+        background: active ? "rgba(16,185,129,0.2)" : "rgba(255,255,255,0.055)",
+        color: active ? "#DEA54B" : "#C8B6A4",
+        borderRadius: "999px",
+        padding: "12px 18px",
+        fontWeight: 950,
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
-function ProgressRow({
+function StatCard({
   title,
   value,
-  max,
+  icon,
+  breakdown,
 }: {
   title: string;
-  value: number;
-  max: number;
+  value: number | string;
+  icon: string;
+  breakdown: BreakdownItem[];
 }) {
-  const percent = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between gap-4">
-        <span className="text-sm text-gray-300">{title}</span>
-        <span className="font-black text-white">{value}</span>
-      </div>
-
-      <div className="h-3 overflow-hidden rounded-full bg-white/10">
+    <div style={statCardStyle}>
+      <div style={{ width: "100%" }}>
         <div
-          className="h-full rounded-full bg-emerald-500"
-          style={{ width: `${percent}%` }}
-        />
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "10px",
+          }}
+        >
+          <div>
+            <p style={{ margin: 0, color: "#C8B6A4", fontWeight: 950 }}>
+              {title}
+            </p>
+
+            <strong
+              style={{
+                display: "block",
+                marginTop: "10px",
+                color: "#FFF8F0",
+                fontWeight: 950,
+                fontSize: "34px",
+              }}
+            >
+              {value}
+            </strong>
+          </div>
+
+          <div style={statIconStyle}>{icon}</div>
+        </div>
+
+        {breakdown.length > 0 ? (
+          <div style={statBreakdownStyle}>
+            {breakdown.slice(0, 4).map((item) => (
+              <div key={`${title}-${item.section}`} style={statBreakdownLineStyle}>
+                <span>{item.section}</span>
+                <strong>{item.count}</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
+
+const pageStyle: React.CSSProperties = {
+  width: "100%",
+  minHeight: "120px",
+  color: "#e5e7eb",
+  display: "grid",
+  gap: "24px",
+};
+
+const heroStyle: React.CSSProperties = {
+  background:
+    "linear-gradient(135deg, #241B16, #16110E)",
+  border: "1px solid #4A3425",
+  borderRadius: "28px",
+  padding: "28px",
+  boxShadow: "0 22px 45px rgba(0,0,0,0.28)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "18px",
+};
+
+const eyebrowStyle: React.CSSProperties = {
+  margin: "0 0 10px",
+  color: "#DEA54B",
+  fontWeight: 900,
+  fontSize: "15px",
+};
+
+const heroTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: "38px",
+  fontWeight: 950,
+  color: "#FFF8F0",
+};
+
+const heroTextStyle: React.CSSProperties = {
+  margin: "12px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "16px",
+  lineHeight: 1.8,
+};
+
+const liveBadgeStyle: React.CSSProperties = {
+  borderRadius: "999px",
+  padding: "12px 16px",
+  background: "rgba(198,138,61,0.12)",
+  color: "#DEA54B",
+  border: "1px solid #4A3425",
+  fontWeight: 950,
+};
+
+const statsGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+  gap: "14px",
+};
+
+const statCardStyle: React.CSSProperties = {
+  background:
+    "linear-gradient(135deg, #241B16, #2A211C)",
+  border: "1px solid #4A3425",
+  borderRadius: "24px",
+  padding: "18px",
+  boxShadow: "0 18px 38px rgba(0,0,0,0.25)",
+  minHeight: "168px",
+};
+
+const statBreakdownStyle: React.CSSProperties = {
+  display: "grid",
+  gap: "7px",
+  marginTop: "14px",
+  borderTop: "1px solid #4A3425",
+  paddingTop: "12px",
+};
+
+const statBreakdownLineStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "8px",
+  color: "#C8B6A4",
+  fontWeight: 850,
+  fontSize: "12px",
+};
+
+const statIconStyle: React.CSSProperties = {
+  width: "48px",
+  height: "48px",
+  borderRadius: "16px",
+  background: "rgba(198,138,61,0.12)",
+  border: "1px solid #4A3425",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: "26px",
+  flexShrink: 0,
+};
+
+const filterCardStyle: React.CSSProperties = {
+  background:
+    "linear-gradient(135deg, #241B16, #16110E)",
+  border: "1px solid #4A3425",
+  borderRadius: "28px",
+  padding: "22px",
+  boxShadow: "0 22px 45px rgba(0,0,0,0.28)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "16px",
+};
+
+const cardStyle: React.CSSProperties = {
+  background:
+    "linear-gradient(135deg, #241B16, #16110E)",
+  border: "1px solid #4A3425",
+  borderRadius: "28px",
+  padding: "24px",
+  boxShadow: "0 22px 45px rgba(0,0,0,0.28)",
+};
+
+const sectionHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: "16px",
+};
+
+const sectionTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: "24px",
+  fontWeight: 950,
+  color: "#FFF8F0",
+};
+
+const sectionSubtitleStyle: React.CSSProperties = {
+  margin: "8px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "14px",
+  lineHeight: 1.8,
+};
+
+const sectionBadgeStyle: React.CSSProperties = {
+  borderRadius: "999px",
+  padding: "10px 14px",
+  background: "rgba(245,158,11,0.16)",
+  color: "#fde68a",
+  border: "1px solid rgba(245,158,11,0.38)",
+  fontWeight: 950,
+  whiteSpace: "nowrap",
+};
+
+const errorStyle: React.CSSProperties = {
+  borderRadius: "18px",
+  padding: "14px",
+  fontWeight: 900,
+};
+
+const emptyStyle: React.CSSProperties = {
+  marginTop: "18px",
+  border: "1px solid #4A3425",
+  background: "rgba(255,255,255,0.055)",
+  color: "#C8B6A4",
+  borderRadius: "22px",
+  padding: "22px",
+  textAlign: "center",
+  fontWeight: 950,
+};
+
+const reviewsGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: "16px",
+  alignItems: "start",
+  marginTop: "18px",
+};
+
+const reviewCardStyle: React.CSSProperties = {
+  background: "rgba(255,255,255,0.055)",
+  borderRadius: "24px",
+  padding: "18px",
+  overflow: "visible",
+};
+
+const reviewHeaderStyle: React.CSSProperties = {
+  position: "relative",
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: "12px",
+};
+
+const productTitleStyle: React.CSSProperties = {
+  margin: 0,
+  color: "#FFF8F0",
+  fontSize: "22px",
+  fontWeight: 950,
+};
+
+const mutedTextStyle: React.CSSProperties = {
+  margin: "10px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 850,
+  fontSize: "13px",
+};
+
+const ratingBadgeStyle: React.CSSProperties = {
+  borderRadius: "999px",
+  padding: "10px 14px",
+  background: "rgba(245,158,11,0.16)",
+  color: "#fde68a",
+  border: "1px solid rgba(245,158,11,0.38)",
+  fontWeight: 950,
+  whiteSpace: "nowrap",
+};
+
+const commentBoxStyle: React.CSSProperties = {
+  marginTop: "18px",
+  border: "1px solid #4A3425",
+  background: "rgba(255,255,255,0.055)",
+  borderRadius: "16px",
+  padding: "14px",
+  color: "#C8B6A4",
+  fontWeight: 900,
+  minHeight: "78px",
+  lineHeight: 1.8,
+};
+
+const statusBoxStyle: React.CSSProperties = {
+  marginTop: "14px",
+  borderTop: "1px solid #4A3425",
+  paddingTop: "14px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  color: "#FFF8F0",
+  fontWeight: 950,
+};
+
+const actionsGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: "8px",
+  marginTop: "14px",
+};
+
+const secondaryButtonStyle: React.CSSProperties = {
+  border: "1px solid #4A3425",
+  borderRadius: "14px",
+  padding: "11px",
+  background: "rgba(198,138,61,0.10)",
+  color: "#DEA54B",
+  fontWeight: 950,
+  cursor: "pointer",
+};
+
+const warningButtonStyle: React.CSSProperties = {
+  border: "1px solid rgba(245,158,11,0.32)",
+  borderRadius: "14px",
+  padding: "11px",
+  background: "rgba(245,158,11,0.12)",
+  color: "#fde68a",
+  fontWeight: 950,
+  cursor: "pointer",
+};
+
+const dangerButtonStyle: React.CSSProperties = {
+  border: "1px solid rgba(239,68,68,0.32)",
+  borderRadius: "14px",
+  padding: "11px",
+  background: "rgba(239,68,68,0.12)",
+  color: "#fca5a5",
+  fontWeight: 950,
+  cursor: "pointer",
+};

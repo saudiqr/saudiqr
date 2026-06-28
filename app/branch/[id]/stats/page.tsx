@@ -3,8 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import BranchPageHeader from "@/components/BranchPageHeader";
-import BranchLayout from "@/components/BranchLayout";
+import { getSubscriptionAccessByBranchId } from "@/lib/subscriptionAccess";
 
 type Order = {
   id: string;
@@ -61,6 +60,7 @@ export default function StatsPage() {
   const branchId = params.id as string;
 
   const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
 
   const [stats, setStats] = useState<Stats>({
     totalOrders: 0,
@@ -86,6 +86,7 @@ export default function StatsPage() {
 
   async function loadStats() {
     setLoading(true);
+    setMessage("");
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 29);
@@ -135,6 +136,27 @@ export default function StatsPage() {
         .eq("orders.branch_id", branchId),
     ]);
 
+    if (
+      ordersResult.error ||
+      waiterCallsResult.error ||
+      billRequestsResult.error ||
+      reviewsResult.error ||
+      activityLogsResult.error ||
+      orderItemsResult.error
+    ) {
+      setMessage(
+        ordersResult.error?.message ||
+          waiterCallsResult.error?.message ||
+          billRequestsResult.error?.message ||
+          reviewsResult.error?.message ||
+          activityLogsResult.error?.message ||
+          orderItemsResult.error?.message ||
+          "حدث خطأ أثناء تحميل الإحصائيات."
+      );
+      setLoading(false);
+      return;
+    }
+
     const orders = (ordersResult.data || []) as Order[];
     const reviews = (reviewsResult.data || []) as Review[];
     const activityLogs = (activityLogsResult.data || []) as ActivityLog[];
@@ -157,7 +179,7 @@ export default function StatsPage() {
     const reviewsCount = reviews.length;
     const averageRating =
       reviewsCount > 0
-        ? reviews.reduce((sum, review) => sum + review.rating, 0) /
+        ? reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0) /
           reviewsCount
         : 0;
 
@@ -219,7 +241,26 @@ export default function StatsPage() {
 
   useEffect(() => {
     if (!branchId) return;
+async function checkAccess() {
+  const access = await getSubscriptionAccessByBranchId(
+    branchId,
+    "stats"
+  );
 
+  if (!access.allowed) {
+    setMessage(access.reason || "غير متاح في الباقة الحالية");
+    setLoading(false);
+    return false;
+  }
+
+  return true;
+}
+
+checkAccess().then((allowed) => {
+  if (allowed) {
+    loadStats();
+  }
+});
     loadStats();
 
     const ordersChannel = supabase
@@ -257,94 +298,138 @@ export default function StatsPage() {
   }, [branchId]);
 
   if (loading) {
+    if (message === "الباقة لا تسمح بالإحصائيات.") {
+  return (
+    <div dir="rtl" style={pageStyle}>
+      <section
+        style={{
+          ...bigCardStyle,
+          textAlign: "center",
+          maxWidth: "700px",
+          margin: "auto",
+        }}
+      >
+        <h1
+          style={{
+            color: "#FFF8F0",
+            fontSize: "32px",
+            fontWeight: 950,
+            marginBottom: "16px",
+          }}
+        >
+          غير متاح في الباقة الحالية
+        </h1>
+
+        <p
+          style={{
+            color: "#fca5a5",
+            fontWeight: 900,
+          }}
+        >
+          {message}
+        </p>
+      </section>
+    </div>
+  );
+}
     return (
-      <BranchLayout branchId={branchId}>
-        <div className="text-white">جاري تحميل الإحصائيات...</div>
-      </BranchLayout>
+      <div dir="rtl" style={pageStyle}>
+        <section style={heroStyle}>
+          <p style={eyebrowStyle}></p>
+          <h1 style={heroTitleStyle}>إحصائيات الفرع</h1>
+          <p style={heroTextStyle}>جاري تحميل الإحصائيات...</p>
+        </section>
+      </div>
     );
   }
 
   return (
-    <BranchLayout branchId={branchId}>
-      <div className="mx-auto max-w-7xl">
-        <BranchPageHeader
-          title="إحصائيات الفرع"
-          description="تحليل أداء الفرع، الطلبات، الزوار، التقييمات، وأفضل المنتجات."
-          branchId={branchId}
+    <div dir="rtl" style={pageStyle}>
+      <section style={heroStyle}>
+        <div>
+          <p style={eyebrowStyle}></p>
+          <h1 style={heroTitleStyle}>إحصائيات الفرع</h1>
+          <p style={heroTextStyle}>
+            تحليل أداء الفرع، الطلبات، الزوار، التقييمات، وأفضل المنتجات.
+          </p>
+        </div>
+
+      </section>
+
+      {message ? <div style={errorStyle}>{message}</div> : null}
+
+      <section style={topGridStyle}>
+        <TopProductsCard products={stats.topProducts} />
+
+        <ConversionCard
+          menuOpened={stats.menuOpened}
+          cartStarted={stats.cartStarted}
+          totalOrders={stats.totalOrders}
+          billRequests={stats.billRequests}
         />
 
-        <section className="mt-10 grid gap-6 xl:grid-cols-3">
-          <TopProductsCard products={stats.topProducts} />
+        <DailyOrdersCard
+          dailyOrders={stats.dailyOrders}
+          maxDailyOrders={maxDailyOrders}
+        />
+      </section>
 
-          <ConversionCard
-            menuOpened={stats.menuOpened}
-            cartStarted={stats.cartStarted}
-            totalOrders={stats.totalOrders}
-            billRequests={stats.billRequests}
-          />
+      <section style={statsGridStyle}>
+        <MetricCard title="فتح المنيو" value={stats.menuOpened} icon="👁️" />
+        <MetricCard title="بدأ الطلب" value={stats.cartStarted} icon="🛒" />
+        <MetricCard title="إجمالي الطلبات" value={stats.totalOrders} icon="✅" />
+        <MetricCard title="معدل التحويل" value={`${stats.conversionRate}%`} icon="📈" />
+        <MetricCard
+          title="إجمالي المبيعات"
+          value={`${stats.totalSales.toFixed(2)} ريال`}
+          icon="💰"
+        />
+        <MetricCard
+          title="متوسط التقييم"
+          value={
+            stats.reviewsCount > 0 ? `⭐ ${stats.averageRating.toFixed(1)}` : "—"
+          }
+          icon="⭐"
+        />
+      </section>
 
-          <DailyOrdersCard
-            dailyOrders={stats.dailyOrders}
-            maxDailyOrders={maxDailyOrders}
-          />
-        </section>
-
-        <section className="mt-8 grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-          <Card title="👁️ فتح المنيو" value={stats.menuOpened} />
-          <Card title="🛒 بدأ الطلب" value={stats.cartStarted} />
-          <Card title="✅ إجمالي الطلبات" value={stats.totalOrders} />
-          <Card title="📈 معدل التحويل" value={`${stats.conversionRate}%`} />
-          <Card title="💰 إجمالي المبيعات" value={`${stats.totalSales} ريال`} />
-          <Card
-            title="⭐ متوسط التقييم"
-            value={
-              stats.reviewsCount > 0 ? `⭐ ${stats.averageRating.toFixed(1)}` : "—"
-            }
-          />
-        </section>
-
-        <section className="mt-4 grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-          <Card title="🛎️ استدعاء النادل" value={stats.waiterCalls} />
-          <Card title="💳 طلب الفاتورة" value={stats.billRequests} />
-          <Card title="طلبات جديدة" value={stats.newOrders} />
-          <Card title="جاري التحضير" value={stats.preparingOrders} />
-          <Card title="جاهز" value={stats.readyOrders} />
-          <Card title="تم التسليم" value={stats.deliveredOrders} />
-        </section>
-      </div>
-    </BranchLayout>
+      <section style={statsGridStyle}>
+        <MetricCard title="استدعاء النادل" value={stats.waiterCalls} icon="🛎️" />
+        <MetricCard title="طلب الفاتورة" value={stats.billRequests} icon="💳" />
+        <MetricCard title="طلبات جديدة" value={stats.newOrders} icon="🟢" />
+        <MetricCard title="جاري التحضير" value={stats.preparingOrders} icon="🟡" />
+        <MetricCard title="جاهز" value={stats.readyOrders} icon="🔵" />
+        <MetricCard title="تم التسليم" value={stats.deliveredOrders} icon="⚫" />
+      </section>
+    </div>
   );
 }
 
 function TopProductsCard({ products }: { products: TopProduct[] }) {
   return (
-    <div className="rounded-3xl border border-emerald-500/30 bg-[#06140f] p-6 text-white">
-      <h2 className="text-2xl font-black">🔥 أكثر المنتجات طلبًا</h2>
+    <section style={bigCardStyle}>
+      <h2 style={sectionTitleStyle}>أكثر المنتجات طلبًا</h2>
+      <p style={sectionSubtitleStyle}>أعلى المنتجات حسب إجمالي الكمية.</p>
 
       {products.length === 0 ? (
-        <p className="mt-5 text-gray-400">لا توجد بيانات منتجات بعد.</p>
+        <div style={emptyInnerStyle}>لا توجد بيانات منتجات بعد.</div>
       ) : (
-        <div className="mt-6 space-y-3">
+        <div style={{ display: "grid", gap: "12px", marginTop: "20px" }}>
           {products.map((product, index) => (
-            <div
-              key={product.name}
-              className="flex items-center justify-between rounded-2xl bg-white/[0.06] p-4"
-            >
+            <div key={product.name} style={productRowStyle}>
               <div>
-                <p className="font-black">
+                <strong style={{ color: "#FFF8F0", fontWeight: 950 }}>
                   {index + 1}- {product.name}
-                </p>
-                <p className="mt-1 text-sm text-gray-400">إجمالي الكمية</p>
+                </strong>
+                <p style={mutedTextStyle}>إجمالي الكمية</p>
               </div>
 
-              <span className="rounded-full bg-emerald-500/20 px-4 py-2 font-black text-emerald-300">
-                {product.quantity}
-              </span>
+              <span style={quantityBadgeStyle}>{product.quantity}</span>
             </div>
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -362,16 +447,17 @@ function ConversionCard({
   const max = Math.max(menuOpened, 1);
 
   return (
-    <div className="rounded-3xl border border-emerald-500/30 bg-[#06140f] p-6 text-white">
-      <h2 className="text-2xl font-black">📊 ملخص التحويل</h2>
+    <section style={bigCardStyle}>
+      <h2 style={sectionTitleStyle}>ملخص التحويل</h2>
+      <p style={sectionSubtitleStyle}>من فتح المنيو إلى إرسال الطلب.</p>
 
-      <div className="mt-6 space-y-4">
+      <div style={{ display: "grid", gap: "16px", marginTop: "22px" }}>
         <ProgressRow title="فتح المنيو" value={menuOpened} max={max} />
         <ProgressRow title="بدأ الطلب" value={cartStarted} max={max} />
         <ProgressRow title="أرسل طلب" value={totalOrders} max={max} />
         <ProgressRow title="طلب الفاتورة" value={billRequests} max={max} />
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -383,18 +469,16 @@ function DailyOrdersCard({
   maxDailyOrders: number;
 }) {
   return (
-    <div className="rounded-3xl border border-emerald-500/30 bg-[#06140f] p-6 text-white">
-      <h2 className="text-2xl font-black">📈 الطلبات آخر 30 يوم</h2>
+    <section style={bigCardStyle}>
+      <h2 style={sectionTitleStyle}>الطلبات آخر 30 يوم</h2>
+      <p style={sectionSubtitleStyle}>رسم مبسط لعدد الطلبات اليومية.</p>
 
-      <div className="mt-8 flex h-56 items-end gap-2 border-b border-white/10 pb-4">
+      <div style={chartStyle}>
         {dailyOrders.map((day) => (
-          <div
-            key={day.date}
-            className="flex flex-1 flex-col items-center justify-end gap-2"
-          >
+          <div key={day.date} style={barWrapperStyle}>
             <div
-              className="w-full rounded-t-xl bg-emerald-500/80"
               style={{
+                ...barStyle,
                 height: `${Math.max(
                   (day.count / maxDailyOrders) * 100,
                   day.count > 0 ? 8 : 0
@@ -403,21 +487,34 @@ function DailyOrdersCard({
               title={`${day.date}: ${day.count} طلب`}
             />
 
-            <span className="text-[10px] text-gray-500">
-              {new Date(day.date).getDate()}
-            </span>
+            <span style={barLabelStyle}>{new Date(day.date).getDate()}</span>
           </div>
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
-function Card({ title, value }: { title: string; value: string | number }) {
+function MetricCard({
+  title,
+  value,
+  icon,
+}: {
+  title: string;
+  value: string | number;
+  icon: string;
+}) {
   return (
-    <div className="min-h-[150px] rounded-3xl border border-emerald-500/30 bg-[#06140f] p-5 text-white">
-      <p className="text-sm text-gray-400">{title}</p>
-      <h2 className="mt-4 text-3xl font-black">{value}</h2>
+    <div style={metricCardStyle}>
+      <div>
+        <p style={{ margin: 0, color: "#C8B6A4", fontWeight: 950 }}>
+          {title}
+        </p>
+
+        <strong style={metricValueStyle}>{value}</strong>
+      </div>
+
+      <div style={metricIconStyle}>{icon}</div>
     </div>
   );
 }
@@ -435,17 +532,240 @@ function ProgressRow({
 
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-gray-300">{title}</span>
-        <span className="font-black text-white">{value}</span>
+      <div style={progressHeaderStyle}>
+        <span>{title}</span>
+        <strong>{value}</strong>
       </div>
 
-      <div className="h-3 overflow-hidden rounded-full bg-white/10">
-        <div
-          className="h-full rounded-full bg-emerald-500"
-          style={{ width: `${percent}%` }}
-        />
+      <div style={progressTrackStyle}>
+        <div style={{ ...progressFillStyle, width: `${percent}%` }} />
       </div>
     </div>
   );
 }
+
+const pageStyle: React.CSSProperties = {
+  width: "100%",
+  minHeight: "100vh",
+  color: "#e5e7eb",
+  display: "grid",
+  gap: "24px",
+};
+
+const heroStyle: React.CSSProperties = {
+  background:
+    "linear-gradient(135deg, #241B16, #16110E)",
+  border: "1px solid #4A3425",
+  borderRadius: "28px",
+  padding: "28px",
+  boxShadow: "0 22px 45px rgba(0,0,0,0.28)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "18px",
+};
+
+const eyebrowStyle: React.CSSProperties = {
+  margin: "0 0 10px",
+  color: "#DEA54B",
+  fontWeight: 900,
+  fontSize: "15px",
+};
+
+const heroTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: "38px",
+  fontWeight: 950,
+  color: "#FFF8F0",
+};
+
+const heroTextStyle: React.CSSProperties = {
+  margin: "12px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "16px",
+  lineHeight: 1.8,
+};
+
+const liveBadgeStyle: React.CSSProperties = {
+  borderRadius: "999px",
+  padding: "12px 16px",
+  background: "rgba(198,138,61,0.12)",
+  color: "#DEA54B",
+  border: "1px solid #4A3425",
+  fontWeight: 950,
+};
+
+const errorStyle: React.CSSProperties = {
+  border: "1px solid rgba(239,68,68,0.35)",
+  background: "rgba(239,68,68,0.14)",
+  color: "#fca5a5",
+  borderRadius: "18px",
+  padding: "14px",
+  fontWeight: 900,
+};
+
+const topGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: "18px",
+};
+
+const statsGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+  gap: "14px",
+};
+
+const bigCardStyle: React.CSSProperties = {
+  background:
+    "linear-gradient(135deg, #241B16, #16110E)",
+  border: "1px solid #4A3425",
+  borderRadius: "28px",
+  padding: "24px",
+  boxShadow: "0 22px 45px rgba(0,0,0,0.28)",
+  minHeight: "320px",
+};
+
+const sectionTitleStyle: React.CSSProperties = {
+  margin: 0,
+  color: "#FFF8F0",
+  fontWeight: 950,
+  fontSize: "24px",
+};
+
+const sectionSubtitleStyle: React.CSSProperties = {
+  margin: "8px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "14px",
+  lineHeight: 1.8,
+};
+
+const mutedTextStyle: React.CSSProperties = {
+  margin: "6px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 800,
+  fontSize: "13px",
+};
+
+const emptyInnerStyle: React.CSSProperties = {
+  marginTop: "20px",
+  border: "1px solid #4A3425",
+  background: "rgba(255,255,255,0.055)",
+  color: "#C8B6A4",
+  borderRadius: "18px",
+  padding: "18px",
+  fontWeight: 900,
+};
+
+const productRowStyle: React.CSSProperties = {
+  border: "1px solid #4A3425",
+  background: "rgba(255,255,255,0.055)",
+  borderRadius: "18px",
+  padding: "14px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "12px",
+};
+
+const quantityBadgeStyle: React.CSSProperties = {
+  borderRadius: "999px",
+  padding: "9px 14px",
+  background: "rgba(198,138,61,0.12)",
+  color: "#DEA54B",
+  border: "1px solid #4A3425",
+  fontWeight: 950,
+};
+
+const chartStyle: React.CSSProperties = {
+  marginTop: "28px",
+  height: "220px",
+  display: "flex",
+  alignItems: "end",
+  gap: "6px",
+  borderBottom: "1px solid rgba(255,255,255,0.12)",
+  paddingBottom: "18px",
+};
+
+const barWrapperStyle: React.CSSProperties = {
+  flex: 1,
+  height: "100%",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "end",
+  gap: "7px",
+};
+
+const barStyle: React.CSSProperties = {
+  width: "100%",
+  minHeight: "0px",
+  borderRadius: "12px 12px 0 0",
+  background: "linear-gradient(180deg, #DEA54B, #C68A3D)",
+};
+
+const barLabelStyle: React.CSSProperties = {
+  color: "#C8B6A4",
+  fontSize: "10px",
+  fontWeight: 800,
+};
+
+const metricCardStyle: React.CSSProperties = {
+  background:
+    "linear-gradient(135deg, #241B16, #2A211C)",
+  border: "1px solid #4A3425",
+  borderRadius: "24px",
+  padding: "18px",
+  boxShadow: "0 18px 38px rgba(0,0,0,0.25)",
+  minHeight: "130px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "12px",
+};
+
+const metricValueStyle: React.CSSProperties = {
+  display: "block",
+  marginTop: "10px",
+  color: "#FFF8F0",
+  fontWeight: 950,
+  fontSize: "26px",
+};
+
+const metricIconStyle: React.CSSProperties = {
+  width: "48px",
+  height: "48px",
+  borderRadius: "16px",
+  background: "rgba(198,138,61,0.12)",
+  border: "1px solid #4A3425",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: "24px",
+  flexShrink: 0,
+};
+
+const progressHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "10px",
+  color: "#C8B6A4",
+  fontWeight: 900,
+  marginBottom: "8px",
+};
+
+const progressTrackStyle: React.CSSProperties = {
+  height: "12px",
+  borderRadius: "999px",
+  overflow: "hidden",
+  background: "rgba(255,255,255,0.08)",
+};
+
+const progressFillStyle: React.CSSProperties = {
+  height: "100%",
+  borderRadius: "999px",
+  background: "linear-gradient(135deg, #C68A3D, #DEA54B)",
+};
