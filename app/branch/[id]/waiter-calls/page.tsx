@@ -1,727 +1,681 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useParams } from "next/navigation";
-import { playSound } from "@/lib/playSound";
-import { supabase } from "@/lib/supabase";
+import { OperationButton } from "@/components/operations/OperationButton";
+import { OperationLayout } from "@/components/operations/OperationLayout";
+import { OperationMode } from "@/components/operations/OperationMode";
+import { OperationStats } from "@/components/operations/OperationStats";
+import { OperationTabs } from "@/components/operations/OperationTabs";
+import {
+  OperationBadge,
+  OperationCard,
+} from "@/components/operations/OperationCard";
+import {
+  type ActiveWaiterTab,
+  type BillRequest,
+  type CleaningTable,
+  type ReadyTask,
+  type WaiterOperationTask,
+  type WaiterCall,
+  useWaiter,
+} from "@/hooks/operations/useWaiter";
+import type { OperationTab } from "@/components/operations/types";
 
-type WaiterCallStatus = "pending" | "done";
-
-type WaiterCall = {
-  id: string;
-  status: WaiterCallStatus;
-  created_at: string;
-  tables: {
-    table_number: number;
-    section_name: string | null;
-  } | null;
-};
-
-type SectionSummary = {
-  name: string;
-  total: number;
-  averageWaitingMinutes: number;
-};
-
-type BreakdownItem = {
-  section: string;
-  count: number;
-};
+const baseTabs: { key: ActiveWaiterTab; label: string; icon: string }[] = [
+  { key: "all", label: "الكل", icon: "⚡" },
+  { key: "ready", label: "جاهز للاستلام", icon: "🍽️" },
+  { key: "bills", label: "طلبات الفاتورة", icon: "💳" },
+  { key: "calls", label: "استدعاء النادل", icon: "🛎️" },
+  { key: "cleaning", label: "تنظيف الطاولة", icon: "🧹" },
+];
 
 export default function WaiterCallsPage() {
   const params = useParams();
   const branchId = params.id as string;
 
-  const [calls, setCalls] = useState<WaiterCall[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
+  const [activeTab, setActiveTab] = useState<ActiveWaiterTab>("all");
+  const [operationMode, setOperationMode] = useState(false);
 
-  const playedIds = useRef(new Set<string>());
+  const {
+    readyTasks,
+    allTasks,
+    readyCount,
+    pickedUpCount,
+    bills,
+    calls,
+    cleaningTables,
+    loading,
+    message,
+    markItemsPickedUp,
+    markItemsDelivered,
+    completeCall,
+    completeBillRequest,
+    finishCleaning,
+  } = useWaiter(branchId);
 
-  const pendingCount = calls.length;
-  const sectionsWithCalls = new Set(
-    calls.map((call) => call.tables?.section_name?.trim() || "القسم الرئيسي")
-  ).size;
+  const tabs = useMemo<OperationTab<ActiveWaiterTab>[]>(
+    () =>
+      baseTabs.map((tab) => ({
+        ...tab,
+        count:
+          tab.key === "all"
+            ? allTasks.length
+            : tab.key === "ready"
+              ? readyTasks.length
+              : tab.key === "bills"
+                ? bills.length
+                : tab.key === "calls"
+                  ? calls.length
+                  : cleaningTables.length,
+      })),
+    [allTasks.length, readyTasks.length, bills.length, calls.length, cleaningTables.length],
+  );
 
-  const newestCallMinutes = calls.length
-    ? getWaitingMinutes(calls[0].created_at)
-    : 0;
-
-  const averageWaitingMinutes = calls.length
-    ? Math.round(
-        calls.reduce((sum, call) => sum + getWaitingMinutes(call.created_at), 0) /
-          calls.length
-      )
-    : 0;
-
-  const sectionSummaries = calls.reduce<SectionSummary[]>((sections, call) => {
-    const sectionName = call.tables?.section_name?.trim() || "القسم الرئيسي";
-    const existing = sections.find((section) => section.name === sectionName);
-
-    if (!existing) {
-      sections.push({
-        name: sectionName,
-        total: 1,
-        averageWaitingMinutes: getWaitingMinutes(call.created_at),
-      });
-
-      return sections;
-    }
-
-    existing.total += 1;
-    existing.averageWaitingMinutes = Math.round(
-      calls
-        .filter(
-          (item) =>
-            (item.tables?.section_name?.trim() || "القسم الرئيسي") === sectionName
-        )
-        .reduce((sum, item) => sum + getWaitingMinutes(item.created_at), 0) /
-        existing.total
-    );
-
-    return sections;
-  }, []);
-
-  const groupedCalls = sectionSummaries.map((section) => ({
-    section,
-    calls: calls.filter(
-      (call) =>
-        (call.tables?.section_name?.trim() || "القسم الرئيسي") === section.name
-    ),
-  }));
-
-  function getBreakdown(): BreakdownItem[] {
-    return sectionSummaries
-      .map((section) => ({
-        section: section.name,
-        count: section.total,
-      }))
-      .filter((item) => item.count > 0);
-  }
-
-  async function loadCalls() {
-    const { data, error } = await supabase
-      .from("waiter_calls")
-      .select(`
-        id,
-        status,
-        created_at,
-        tables (
-          table_number,
-          section_name
-        )
-      `)
-      .eq("branch_id", branchId)
-      .eq("status", "pending")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setMessage(error.message);
-      setCalls([]);
-      setLoading(false);
-      return;
-    }
-
-    setCalls((data || []) as unknown as WaiterCall[]);
-    setLoading(false);
-  }
-
-  async function completeCall(callId: string) {
-    setMessage("");
-
-    const { error } = await supabase
-      .from("waiter_calls")
-      .update({ status: "done" })
-      .eq("id", callId);
-
-    if (error) {
-      setMessage(error.message);
-      return;
-    }
-
-    await loadCalls();
-  }
-
-  useEffect(() => {
-    loadCalls();
-
-    const channel = supabase
-      .channel(`waiter-calls-${branchId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "waiter_calls",
-          filter: `branch_id=eq.${branchId}`,
-        },
-        (payload) => {
-          const newCall = payload.new as { id?: string };
-
-          if (payload.eventType === "INSERT" && newCall.id) {
-            if (!playedIds.current.has(newCall.id)) {
-              playedIds.current.add(newCall.id);
-              playSound("waiter-call");
-            }
-          }
-
-          loadCalls();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [branchId]);
-
-  if (loading) {
-    return (
-      <div dir="rtl" style={pageStyle}>
-        <section style={heroStyle}>
-          <div>
-            <p style={eyebrowStyle}>SaudiQR Waiter</p>
-            <h1 style={heroTitleStyle}>طلبات النادل</h1>
-            <p style={heroTextStyle}>جاري تحميل طلبات النادل...</p>
-          </div>
-
-          <div style={liveBadgeStyle}>Realtime</div>
-        </section>
-      </div>
-    );
-  }
+  const activeListCount = tabs.find((tab) => tab.key === activeTab)?.count || 0;
 
   return (
-    <div dir="rtl" style={pageStyle}>
-      <section style={heroStyle}>
+    <OperationLayout operationMode={operationMode}>
+      <OperationMode active={operationMode} />
+
+      <section style={topBarStyle(operationMode)}>
         <div>
-          <p style={eyebrowStyle}>SaudiQR Waiter</p>
-          <h1 style={heroTitleStyle}>طلبات النادل</h1>
-          <p style={heroTextStyle}>
-            تابع طلبات النادل حسب القسم، واعرف سرعة الاستجابة لكل طاولة.
-          </p>
+          <p style={eyebrowStyle}>SaudiQR Waiter · شاشة تشغيل</p>
+          <h1 style={titleStyle(operationMode)}>النادل</h1>
+          {!operationMode ? (
+            <p style={subtitleStyle}>
+              استلام الجاهز، الفواتير، الاستدعاءات، وتنظيف الطاولات من مكان
+              واحد.
+            </p>
+          ) : null}
         </div>
 
+        <OperationButton
+          tone="gold"
+          onClick={() => setOperationMode((current) => !current)}
+          style={operationButtonFixStyle}
+        >
+          {operationMode ? "الخروج من وضع التشغيل" : "وضع التشغيل"}
+        </OperationButton>
       </section>
 
-      <section style={statsGridStyle}>
-        <StatCard
-          title="كل الطلبات"
-          value={calls.length}
-          icon="🛎️"
-          breakdown={getBreakdown()}
+      {!operationMode ? (
+        <OperationStats
+          columns={5}
+          stats={[
+            { title: "جاهز", value: readyCount, tone: "green" },
+            { title: "مستلم", value: pickedUpCount, tone: "blue" },
+            { title: "فواتير", value: bills.length, tone: "gold" },
+            { title: "استدعاء", value: calls.length, tone: "red" },
+            { title: "تنظيف", value: cleaningTables.length, tone: "gray" },
+          ]}
         />
+      ) : null}
 
-        <StatCard
-          title="طلبات بانتظار الخدمة"
-          value={pendingCount}
-          icon="🔔"
-          breakdown={getBreakdown()}
-        />
-
-        <StatCard
-          title="أقسام لديها طلبات"
-          value={sectionsWithCalls}
-          icon="📍"
-          breakdown={getBreakdown()}
-        />
-
-        <StatCard
-          title="أحدث طلب"
-          value={calls.length ? `${newestCallMinutes} د` : "0 د"}
-          icon="⚡"
-          breakdown={calls.length ? [{ section: "آخر طلب", count: newestCallMinutes }] : []}
-        />
-
-        <StatCard
-          title="متوسط وقت الانتظار"
-          value={calls.length ? `${averageWaitingMinutes} د` : "0 د"}
-          icon="⏱️"
-          breakdown={getBreakdown()}
-        />
-
-        <StatCard
-          title="حالة الشاشة"
-          value="مباشر"
-          icon="🟢"
-          breakdown={[{ section: "Realtime", count: 1 }]}
+      <section style={tabsWrapStyle(operationMode)}>
+        <OperationTabs
+          tabs={tabs}
+          activeTab={activeTab}
+          onChange={setActiveTab}
         />
       </section>
 
       {message ? <div style={errorStyle}>{message}</div> : null}
 
-      <section style={cardStyle}>
-        <div style={sectionHeaderStyle}>
-          <div>
-            <h2 style={sectionTitleStyle}>طلبات النادل حسب الأقسام</h2>
-            <p style={sectionSubtitleStyle}>
-              كل قسم ظاهر لوحده، وكل طلب يظهر مع رقم الطاولة ومدة الانتظار.
-            </p>
-          </div>
-        </div>
+      {loading ? (
+        <section style={emptyStyle}>جاري تحميل شاشة النادل...</section>
+      ) : null}
 
-        {calls.length === 0 ? (
-          <div style={emptyStyle}>لا توجد طلبات نادل حالياً.</div>
-        ) : (
-          <div style={sectionTablesWrapperStyle}>
-            {groupedCalls.map(({ section, calls: sectionCalls }) => (
-              <section key={section.name} style={sectionTablesBlockStyle}>
-                <div style={sectionTablesHeaderStyle}>
-                  <div>
-                    <h3 style={sectionTablesTitleStyle}>{section.name}</h3>
-                    <p style={sectionTablesSubtitleStyle}>
-                      {section.total} طلب · متوسط الانتظار{" "}
-                      {section.averageWaitingMinutes} دقيقة
-                    </p>
-                  </div>
+      {!loading && activeListCount === 0 ? (
+        <section style={emptyStyle}>لا توجد عناصر حالياً في هذا القسم.</section>
+      ) : null}
 
-                  <span style={sectionBadgeStyle}>
-                    {section.total} بانتظار الخدمة
-                  </span>
-                </div>
+      {!loading && activeTab === "all" ? (
+        <section style={gridStyle(operationMode)}>
+          {allTasks.map((task) => (
+            <WaiterUnifiedTaskCard
+              key={task.id}
+              task={task}
+              operationMode={operationMode}
+              onReadyPickUp={(readyTask) => markItemsPickedUp(readyTask)}
+              onReadyDeliver={(readyTask) => markItemsDelivered(readyTask)}
+              onBill={(bill) => completeBillRequest(bill)}
+              onCall={(call) => completeCall(call.id)}
+              onCleaning={(table) => finishCleaning(table)}
+            />
+          ))}
+        </section>
+      ) : null}
 
-                <div style={callsGridStyle}>
-                  {sectionCalls.map((call) => {
-                    const waitingMinutes = getWaitingMinutes(call.created_at);
-                    const urgency = getUrgencyConfig(waitingMinutes);
+      {!loading && activeTab === "ready" ? (
+        <section style={gridStyle(operationMode)}>
+          {readyTasks.map((task) => (
+            <ReadyTaskCard
+              key={task.id}
+              task={task}
+              operationMode={operationMode}
+              onPickUp={() => markItemsPickedUp(task)}
+              onDeliver={() => markItemsDelivered(task)}
+            />
+          ))}
+        </section>
+      ) : null}
 
-                    return (
-                      <article
-                        key={call.id}
-                        style={{
-                          ...callCardStyle,
-                          border: `1px solid ${urgency.border}`,
-                        }}
-                      >
-                        <div style={callHeaderStyle}>
-                          <div>
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "10px",
-                              }}
-                            >
-                              <span
-                                style={{
-                                  width: "12px",
-                                  height: "12px",
-                                  borderRadius: "999px",
-                                  background: urgency.dot,
-                                  boxShadow: `0 0 12px ${urgency.dot}`,
-                                }}
-                              />
+      {!loading && activeTab === "bills" ? (
+        <section style={gridStyle(operationMode)}>
+          {bills.map((bill) => (
+            <BillCard
+              key={bill.id}
+              bill={bill}
+              onAction={() => completeBillRequest(bill)}
+            />
+          ))}
+        </section>
+      ) : null}
 
-                              <h3 style={tableTitleStyle}>
-                                طاولة{" "}
-                                {call.tables?.table_number || "غير محددة"}
-                              </h3>
-                            </div>
+      {!loading && activeTab === "calls" ? (
+        <section style={gridStyle(operationMode)}>
+          {calls.map((call) => (
+            <CallCard
+              key={call.id}
+              call={call}
+              onAction={() => completeCall(call.id)}
+            />
+          ))}
+        </section>
+      ) : null}
 
-                            <span
-                              style={{
-                                display: "inline-flex",
-                                marginTop: "12px",
-                                borderRadius: "999px",
-                                padding: "8px 12px",
-                                background: urgency.bg,
-                                color: urgency.color,
-                                border: `1px solid ${urgency.border}`,
-                                fontWeight: 950,
-                                fontSize: "13px",
-                              }}
-                            >
-                              {urgency.label}
-                            </span>
-
-                            <p style={mutedTextStyle}>
-                              📍 {call.tables?.section_name || "القسم الرئيسي"}
-                            </p>
-
-                            <p style={mutedTextStyle}>
-                              ⏱️ منذ {waitingMinutes} دقيقة
-                            </p>
-                          </div>
-
-                          <span style={waiterBadgeStyle}>طلب نادل</span>
-                        </div>
-
-                        <div style={noticeBoxStyle}>
-                          العميل يحتاج مساعدة من الموظف.
-                        </div>
-
-                        <button
-                          onClick={() => completeCall(call.id)}
-                          style={greenButtonStyle}
-                        >
-                          ✅ تمت الخدمة
-                        </button>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
+      {!loading && activeTab === "cleaning" ? (
+        <section style={gridStyle(operationMode)}>
+          {cleaningTables.map((table) => (
+            <CleaningCard
+              key={table.id}
+              table={table}
+              onAction={() => finishCleaning(table)}
+            />
+          ))}
+        </section>
+      ) : null}
+    </OperationLayout>
   );
 }
 
-function getWaitingMinutes(date: string) {
-  return Math.max(1, Math.floor((Date.now() - new Date(date).getTime()) / 60000));
-}
-
-function getUrgencyConfig(minutes: number) {
-  if (minutes >= 10) {
-    return {
-      label: "متأخر",
-      bg: "rgba(239,68,68,0.14)",
-      color: "#fca5a5",
-      border: "rgba(239,68,68,0.34)",
-      dot: "#f87171",
-    };
-  }
-
-  if (minutes >= 5) {
-    return {
-      label: "يحتاج متابعة",
-      bg: "rgba(245,158,11,0.14)",
-      color: "#fde68a",
-      border: "rgba(245,158,11,0.34)",
-      dot: "#fbbf24",
-    };
-  }
-
-  return {
-    label: "جديد",
-    bg: "rgba(16,185,129,0.16)",
-    color: "#6ee7b7",
-    border: "rgba(16,185,129,0.42)",
-    dot: "#34d399",
-  };
-}
-
-function StatCard({
-  title,
-  value,
-  icon,
-  breakdown,
+function WaiterUnifiedTaskCard({
+  task,
+  operationMode,
+  onReadyPickUp,
+  onReadyDeliver,
+  onBill,
+  onCall,
+  onCleaning,
 }: {
-  title: string;
-  value: number | string;
-  icon: string;
-  breakdown: BreakdownItem[];
+  task: WaiterOperationTask;
+  operationMode: boolean;
+  onReadyPickUp: (task: ReadyTask) => void;
+  onReadyDeliver: (task: ReadyTask) => void;
+  onBill: (bill: BillRequest) => void;
+  onCall: (call: WaiterCall) => void;
+  onCleaning: (table: CleaningTable) => void;
+}) {
+  if (task.type === "ready") {
+    return (
+      <ReadyTaskCard
+        task={task.readyTask}
+        operationMode={operationMode}
+        onPickUp={() => onReadyPickUp(task.readyTask)}
+        onDeliver={() => onReadyDeliver(task.readyTask)}
+      />
+    );
+  }
+
+  if (task.type === "bills") {
+    return (
+      <BillCard
+        bill={task.bill}
+        onAction={() => onBill(task.bill)}
+        operationMode={operationMode}
+      />
+    );
+  }
+
+  if (task.type === "calls") {
+    return (
+      <CallCard
+        call={task.call}
+        onAction={() => onCall(task.call)}
+        operationMode={operationMode}
+      />
+    );
+  }
+
+  return (
+    <CleaningCard
+      table={task.table}
+      onAction={() => onCleaning(task.table)}
+      operationMode={operationMode}
+    />
+  );
+}
+
+function ReadyTaskCard({
+  task,
+  operationMode,
+  onPickUp,
+  onDeliver,
+}: {
+  task: ReadyTask;
+  operationMode: boolean;
+  onPickUp: () => void;
+  onDeliver: () => void;
+}) {
+  const isPickedUp = task.status === "picked_up";
+
+  return (
+    <OperationCard style={taskCardStyle(operationMode)}>
+      <CardHeader
+        badge={task.mode === "once" ? "مرة واحدة" : "دفعات"}
+        badgeStyle={modeBadgeStyle(task.mode)}
+        title={`طاولة ${task.table?.table_number || "غير محددة"}`}
+        section={task.table?.section_name || "القسم الرئيسي"}
+        meta={
+          <StatusMeta
+            isPickedUp={isPickedUp}
+            time={task.readyAt || task.createdAt}
+          />
+        }
+        operationMode={operationMode}
+      />
+
+      <div style={orderInfoStyle(operationMode)}>
+        <strong>{task.title}</strong>
+        <span>{task.subtitle}</span>
+        <span>رقم الطلب: {task.orderNumber || "غير محدد"}</span>
+        <span>
+          الانتظار: {getWaitingMinutes(task.readyAt || task.createdAt)} د
+        </span>
+      </div>
+
+      <div style={itemsListStyle(operationMode)}>
+        {task.items.map((item) => (
+          <div key={item.id} style={itemRowStyle}>
+            <span style={qtyStyle}>{item.quantity}×</span>
+            <div>
+              <strong>{item.products?.name || "منتج غير معروف"}</strong>
+              {item.notes ? <p style={noteStyle}>📝 {item.notes}</p> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <OperationButton
+        tone={isPickedUp ? "green" : "gold"}
+        fullWidth
+        onClick={isPickedUp ? onDeliver : onPickUp}
+      >
+        {isPickedUp ? "تم التسليم للطاولة" : "استلام من المطبخ"}
+      </OperationButton>
+    </OperationCard>
+  );
+}
+
+function BillCard({
+  bill,
+  onAction,
+  operationMode = false,
+}: {
+  bill: BillRequest;
+  onAction: () => void;
+  operationMode?: boolean;
 }) {
   return (
-    <div style={statCardStyle}>
-      <div style={{ width: "100%" }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: "10px",
-          }}
-        >
-          <div>
-            <p style={{ margin: 0, color: "#a7f3d0", fontWeight: 950 }}>
-              {title}
-            </p>
+    <SimpleTaskCard
+      icon="💳"
+      badge="طلب فاتورة"
+      title={`طاولة ${bill.tables?.table_number || "غير محددة"}`}
+      section={bill.tables?.section_name || "القسم الرئيسي"}
+      time={bill.created_at}
+      note="العميل طلب الفاتورة. النادل يبلغ الكاشير فقط، والكاشير هو من ينهي المحاسبة."
+      actionLabel="تم إبلاغ الكاشير"
+      onAction={onAction}
+      operationMode={operationMode}
+    />
+  );
+}
 
-            <strong
-              style={{
-                display: "block",
-                marginTop: "10px",
-                color: "#ffffff",
-                fontWeight: 950,
-                fontSize: "34px",
-              }}
-            >
-              {value}
-            </strong>
-          </div>
+function CallCard({
+  call,
+  onAction,
+  operationMode = false,
+}: {
+  call: WaiterCall;
+  onAction: () => void;
+  operationMode?: boolean;
+}) {
+  return (
+    <SimpleTaskCard
+      icon="🛎️"
+      badge="استدعاء نادل"
+      title={`طاولة ${call.tables?.table_number || "غير محددة"}`}
+      section={call.tables?.section_name || "القسم الرئيسي"}
+      time={call.created_at}
+      note="العميل يحتاج مساعدة من الموظف."
+      actionLabel="تمت الخدمة"
+      onAction={onAction}
+      operationMode={operationMode}
+    />
+  );
+}
 
-          <div style={statIconStyle}>{icon}</div>
-        </div>
+function CleaningCard({
+  table,
+  onAction,
+  operationMode = false,
+}: {
+  table: CleaningTable;
+  onAction: () => void;
+  operationMode?: boolean;
+}) {
+  return (
+    <SimpleTaskCard
+      icon="🧹"
+      badge="تنظيف الطاولة"
+      title={`طاولة ${table.table_number}`}
+      section={table.section_name || "القسم الرئيسي"}
+      time={table.last_activity_at || new Date().toISOString()}
+      note="نظّف الطاولة ثم اجعلها متاحة للعميل التالي."
+      actionLabel="تم التنظيف والطاولة متاحة"
+      onAction={onAction}
+      operationMode={operationMode}
+    />
+  );
+}
 
-        {breakdown.length > 0 ? (
-          <div style={statBreakdownStyle}>
-            {breakdown.slice(0, 4).map((item) => (
-              <div key={`${title}-${item.section}`} style={statBreakdownLineStyle}>
-                <span>{item.section}</span>
-                <strong>{item.count}</strong>
-              </div>
-            ))}
-          </div>
-        ) : null}
+function SimpleTaskCard({
+  icon,
+  badge,
+  title,
+  section,
+  time,
+  note,
+  actionLabel,
+  onAction,
+  operationMode = false,
+}: {
+  icon: string;
+  badge: string;
+  title: string;
+  section: string;
+  time: string;
+  note: string;
+  actionLabel: string;
+  onAction: () => void;
+  operationMode?: boolean;
+}) {
+  return (
+    <OperationCard style={taskCardStyle(operationMode)}>
+      <CardHeader
+        badge={`${icon} ${badge}`}
+        badgeStyle={simpleBadgeStyle}
+        title={title}
+        section={section}
+        meta={<span style={timeStyle}>{formatTime(time)}</span>}
+        operationMode={operationMode}
+      />
+
+      <div style={noticeStyle}>{note}</div>
+      <p style={mutedTextStyle}>منذ {getWaitingMinutes(time)} دقيقة</p>
+      <OperationButton tone="green" fullWidth onClick={onAction}>
+        {actionLabel}
+      </OperationButton>
+    </OperationCard>
+  );
+}
+
+function CardHeader({
+  badge,
+  badgeStyle,
+  title,
+  section,
+  meta,
+  operationMode,
+}: {
+  badge: string;
+  badgeStyle: CSSProperties;
+  title: string;
+  section: string;
+  meta: React.ReactNode;
+  operationMode: boolean;
+}) {
+  return (
+    <div style={cardHeaderStyle}>
+      <div>
+        <OperationBadge style={badgeStyle}>{badge}</OperationBadge>
+        <h2 style={tableTitleStyle(operationMode)}>{title}</h2>
+        <p style={mutedTextStyle}>{section}</p>
       </div>
+      <div style={rightMetaStyle}>{meta}</div>
     </div>
   );
 }
 
-const pageStyle: React.CSSProperties = {
-  width: "100%",
-  minHeight: "170px",
-  color: "#e5e7eb",
-  display: "grid",
-  gap: "24px",
-};
+function StatusMeta({
+  isPickedUp,
+  time,
+}: {
+  isPickedUp: boolean;
+  time: string | null;
+}) {
+  return (
+    <>
+      <OperationBadge style={statusBadgeStyle(isPickedUp)}>
+        {isPickedUp ? "مستلم" : "جاهز"}
+      </OperationBadge>
+      <span style={timeStyle}>{formatTime(time)}</span>
+    </>
+  );
+}
 
-const heroStyle: React.CSSProperties = {
-  background:
-    "linear-gradient(135deg, rgba(6,78,59,0.98), rgba(6,20,15,0.98))",
-  border: "1px solid rgba(16,185,129,0.42)",
-  borderRadius: "28px",
-  padding: "28px",
-  boxShadow: "0 22px 45px rgba(0,0,0,0.28)",
+function getWaitingMinutes(date: string | null) {
+  if (!date) return 0;
+  return Math.max(
+    1,
+    Math.floor((Date.now() - new Date(date).getTime()) / 60000),
+  );
+}
+
+function formatTime(date: string | null) {
+  if (!date) return "غير محدد";
+  return new Date(date).toLocaleTimeString("ar-SA", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+const topBarStyle = (operationMode: boolean): CSSProperties => ({
+  border: "1px solid #4A3425",
+  borderRadius: operationMode ? "22px" : "28px",
+  background: "linear-gradient(135deg, #241B16, #16110E)",
+  padding: operationMode ? "12px" : "16px",
   display: "flex",
-  alignItems: "center",
   justifyContent: "space-between",
-  gap: "18px",
-};
-
-const eyebrowStyle: React.CSSProperties = {
-  margin: "0 0 10px",
-  color: "#6ee7b7",
-  fontWeight: 900,
-  fontSize: "15px",
-};
-
-const heroTitleStyle: React.CSSProperties = {
-  margin: 0,
-  fontSize: "38px",
-  fontWeight: 950,
-  color: "#ffffff",
-};
-
-const heroTextStyle: React.CSSProperties = {
-  margin: "12px 0 0",
-  color: "#d1fae5",
-  fontWeight: 800,
-  fontSize: "16px",
-  lineHeight: 1.8,
-};
-
-const liveBadgeStyle: React.CSSProperties = {
-  borderRadius: "999px",
-  padding: "12px 16px",
-  background: "rgba(16,185,129,0.16)",
-  color: "#6ee7b7",
-  border: "1px solid rgba(16,185,129,0.28)",
-  fontWeight: 950,
-};
-
-const statsGridStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+  alignItems: "center",
   gap: "14px",
+  boxShadow: "0 18px 55px rgba(0,0,0,.28)",
+  position: operationMode ? "sticky" : "static",
+  top: 0,
+  zIndex: 20,
+});
+
+const eyebrowStyle: CSSProperties = {
+  margin: "0 0 6px",
+  color: "#DEA54B",
+  fontWeight: 950,
+  fontSize: "13px",
+};
+const titleStyle = (operationMode: boolean): CSSProperties => ({
+  margin: 0,
+  fontSize: operationMode ? "34px" : "36px",
+  fontWeight: 950,
+  lineHeight: 1,
+});
+const subtitleStyle: CSSProperties = {
+  margin: "10px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 850,
+  fontSize: "14px",
+};
+const operationButtonFixStyle: CSSProperties = {
+  border: "1px solid rgba(198,138,61,.62)",
+  background: "rgba(198,138,61,.14)",
+  color: "#DEA54B",
 };
 
-const statCardStyle: React.CSSProperties = {
-  background:
-    "linear-gradient(135deg, rgba(6,78,59,0.98), rgba(9,40,30,0.98))",
-  border: "1px solid rgba(16,185,129,0.38)",
-  borderRadius: "24px",
-  padding: "18px",
-  boxShadow: "0 18px 38px rgba(0,0,0,0.25)",
-  minHeight: "120px",
+const tabsWrapStyle = (operationMode: boolean): CSSProperties => ({
+  position: operationMode ? "sticky" : "static",
+  top: operationMode ? "74px" : "auto",
+  zIndex: 19,
+});
+
+const gridStyle = (operationMode: boolean): CSSProperties => ({
+  display: "grid",
+  gridTemplateColumns: operationMode
+    ? "repeat(4, minmax(0, 1fr))"
+    : "repeat(3, minmax(0, 1fr))",
+  gap: operationMode ? "10px" : "14px",
+});
+
+const taskCardStyle = (operationMode: boolean): CSSProperties => ({
+  background: "linear-gradient(145deg, #241B16, #1D1612)",
+  borderRadius: operationMode ? "22px" : "26px",
+  padding: operationMode ? "11px" : "13px",
+  minHeight: "auto",
+  gap: operationMode ? "8px" : "10px",
+});
+
+const cardHeaderStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: "10px",
+  borderBottom: "1px solid #4A3425",
+  paddingBottom: "10px",
 };
 
-const statBreakdownStyle: React.CSSProperties = {
+const tableTitleStyle = (operationMode: boolean): CSSProperties => ({
+  margin: "8px 0 0",
+  fontSize: operationMode ? "26px" : "30px",
+  fontWeight: 950,
+  lineHeight: 1,
+});
+
+const mutedTextStyle: CSSProperties = {
+  margin: "7px 0 0",
+  color: "#C8B6A4",
+  fontWeight: 850,
+  fontSize: "13px",
+};
+const rightMetaStyle: CSSProperties = {
+  display: "grid",
+  justifyItems: "end",
+  gap: "7px",
+};
+const timeStyle: CSSProperties = {
+  color: "#C8B6A4",
+  fontWeight: 900,
+  fontSize: "13px",
+  whiteSpace: "nowrap",
+};
+
+const modeBadgeStyle = (mode: "once" | "staged"): CSSProperties => ({
+  background: mode === "once" ? "rgba(59,130,246,.16)" : "rgba(139,92,246,.18)",
+  color: mode === "once" ? "#93C5FD" : "#C4B5FD",
+  border:
+    mode === "once"
+      ? "1px solid rgba(59,130,246,.34)"
+      : "1px solid rgba(139,92,246,.38)",
+});
+
+const simpleBadgeStyle: CSSProperties = {
+  background: "rgba(198,138,61,.14)",
+  color: "#DEA54B",
+  border: "1px solid rgba(198,138,61,.34)",
+};
+
+const statusBadgeStyle = (isPickedUp: boolean): CSSProperties => ({
+  background: isPickedUp ? "rgba(59,130,246,.14)" : "rgba(63,163,108,.16)",
+  color: isPickedUp ? "#93C5FD" : "#9DE7B4",
+  border: isPickedUp
+    ? "1px solid rgba(59,130,246,.34)"
+    : "1px solid rgba(63,163,108,.38)",
+});
+
+const orderInfoStyle = (operationMode: boolean): CSSProperties => ({
+  border: "1px solid rgba(74,52,37,.9)",
+  background: "#2A211C",
+  borderRadius: "18px",
+  padding: operationMode ? "8px" : "10px",
+  display: "grid",
+  gap: "5px",
+  color: "#C8B6A4",
+  fontWeight: 850,
+  fontSize: operationMode ? "12px" : "13px",
+});
+
+const itemsListStyle = (operationMode: boolean): CSSProperties => ({
   display: "grid",
   gap: "7px",
-  marginTop: "14px",
-  borderTop: "1px solid rgba(16,185,129,0.18)",
-  paddingTop: "12px",
+  maxHeight: operationMode ? "155px" : "180px",
+  overflowY: "auto",
+});
+
+const itemRowStyle: CSSProperties = {
+  border: "1px solid #4A3425",
+  borderRadius: "17px",
+  background: "rgba(255,248,240,.045)",
+  padding: "9px",
+  display: "flex",
+  gap: "9px",
+  alignItems: "flex-start",
 };
 
-const statBreakdownLineStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "8px",
-  color: "#d1fae5",
+const qtyStyle: CSSProperties = {
+  minWidth: "36px",
+  borderRadius: "14px",
+  background: "rgba(198,138,61,.16)",
+  color: "#DEA54B",
+  textAlign: "center",
+  padding: "5px",
+  fontWeight: 950,
+};
+
+const noteStyle: CSSProperties = {
+  margin: "5px 0 0",
+  color: "#F3C77D",
   fontWeight: 850,
   fontSize: "12px",
 };
-
-const statIconStyle: React.CSSProperties = {
-  width: "48px",
-  height: "48px",
-  borderRadius: "16px",
-  background: "rgba(16,185,129,0.16)",
-  border: "1px solid rgba(16,185,129,0.22)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontSize: "26px",
-  flexShrink: 0,
+const noticeStyle: CSSProperties = {
+  border: "1px solid rgba(198,138,61,.28)",
+  background: "rgba(198,138,61,.10)",
+  color: "#F3C77D",
+  borderRadius: "18px",
+  padding: "12px",
+  fontWeight: 900,
+  lineHeight: 1.7,
 };
-
-const cardStyle: React.CSSProperties = {
-  background:
-    "linear-gradient(135deg, rgba(8,47,35,0.98), rgba(6,20,15,0.98))",
-  border: "1px solid rgba(16,185,129,0.38)",
-  borderRadius: "28px",
-  padding: "24px",
-  boxShadow: "0 22px 45px rgba(0,0,0,0.28)",
-};
-
-const sectionHeaderStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: "16px",
-};
-
-const sectionTitleStyle: React.CSSProperties = {
-  margin: 0,
-  fontSize: "24px",
-  fontWeight: 950,
-  color: "#ffffff",
-};
-
-const sectionSubtitleStyle: React.CSSProperties = {
-  margin: "8px 0 0",
-  color: "#a7f3d0",
-  fontWeight: 800,
-  fontSize: "14px",
-  lineHeight: 1.8,
-};
-
-const errorStyle: React.CSSProperties = {
-  border: "1px solid rgba(239,68,68,0.35)",
-  background: "rgba(239,68,68,0.14)",
-  color: "#fca5a5",
+const errorStyle: CSSProperties = {
+  border: "1px solid rgba(239,68,68,.35)",
+  background: "rgba(239,68,68,.14)",
+  color: "#FCA5A5",
   borderRadius: "18px",
   padding: "14px",
   fontWeight: 900,
 };
-
-const emptyStyle: React.CSSProperties = {
-  marginTop: "18px",
-  border: "1px solid rgba(16,185,129,0.22)",
-  background: "rgba(255,255,255,0.055)",
-  color: "#d1d5db",
-  borderRadius: "22px",
-  padding: "22px",
+const emptyStyle: CSSProperties = {
+  border: "1px solid #4A3425",
+  background: "#241B16",
+  color: "#C8B6A4",
+  borderRadius: "24px",
+  padding: "24px",
   textAlign: "center",
   fontWeight: 950,
-};
-
-const sectionTablesWrapperStyle: React.CSSProperties = {
-  display: "grid",
-  gap: "22px",
-  marginTop: "20px",
-};
-
-const sectionTablesBlockStyle: React.CSSProperties = {
-  border: "1px solid rgba(16,185,129,0.24)",
-  background: "rgba(255,255,255,0.035)",
-  borderRadius: "26px",
-  padding: "20px",
-};
-
-const sectionTablesHeaderStyle: React.CSSProperties = {
-  borderBottom: "1px solid rgba(16,185,129,0.16)",
-  paddingBottom: "16px",
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: "16px",
-};
-
-const sectionTablesTitleStyle: React.CSSProperties = {
-  margin: 0,
-  color: "#ffffff",
-  fontWeight: 950,
-  fontSize: "26px",
-};
-
-const sectionTablesSubtitleStyle: React.CSSProperties = {
-  margin: "8px 0 0",
-  color: "#a7f3d0",
-  fontWeight: 850,
-  fontSize: "14px",
-  lineHeight: 1.8,
-};
-
-const sectionBadgeStyle: React.CSSProperties = {
-  borderRadius: "999px",
-  padding: "10px 14px",
-  background: "rgba(59,130,246,0.16)",
-  color: "#bfdbfe",
-  border: "1px solid rgba(59,130,246,0.38)",
-  fontWeight: 950,
-  whiteSpace: "nowrap",
-};
-
-const callsGridStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-  gap: "16px",
-  marginTop: "18px",
-};
-
-const callCardStyle: React.CSSProperties = {
-  background: "rgba(255,255,255,0.055)",
-  borderRadius: "24px",
-  padding: "18px",
-  overflow: "visible",
-};
-
-const callHeaderStyle: React.CSSProperties = {
-  position: "relative",
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: "12px",
-};
-
-const tableTitleStyle: React.CSSProperties = {
-  margin: 0,
-  color: "#ffffff",
-  fontSize: "24px",
-  fontWeight: 950,
-};
-
-const mutedTextStyle: React.CSSProperties = {
-  margin: "10px 0 0",
-  color: "#a7f3d0",
-  fontWeight: 850,
-  fontSize: "13px",
-};
-
-const waiterBadgeStyle: React.CSSProperties = {
-  borderRadius: "999px",
-  padding: "10px 14px",
-  background: "rgba(59,130,246,0.16)",
-  color: "#bfdbfe",
-  border: "1px solid rgba(59,130,246,0.38)",
-  fontWeight: 950,
-  whiteSpace: "nowrap",
-};
-
-const noticeBoxStyle: React.CSSProperties = {
-  marginTop: "18px",
-  border: "1px solid rgba(16,185,129,0.18)",
-  background: "rgba(255,255,255,0.055)",
-  borderRadius: "16px",
-  padding: "14px",
-  color: "#d1d5db",
-  fontWeight: 900,
-};
-
-const greenButtonStyle: React.CSSProperties = {
-  width: "100%",
-  marginTop: "14px",
-  border: "0",
-  borderRadius: "16px",
-  padding: "14px 18px",
-  background: "linear-gradient(135deg, #10b981, #059669)",
-  color: "#ffffff",
-  fontWeight: 950,
-  cursor: "pointer",
 };

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type OrderStatus = "new" | "preparing" | "ready" | "delivered";
+type ServiceMode = "once" | "staged" | null;
 
 type Product = {
   id: string;
@@ -31,6 +32,7 @@ type Order = {
   id: string;
   order_number: string | null;
   status: OrderStatus;
+  service_mode: ServiceMode;
   total: number;
   notes: string | null;
   created_at: string;
@@ -75,13 +77,13 @@ const statusConfig: Record<
   }
 > = {
   new: {
-    label: "طلب جديد",
+    label: "بانتظار اعتماد الصالة",
     bg: "rgba(198,138,61,0.16)",
     color: theme.hoverGold,
     border: "rgba(198,138,61,0.42)",
   },
   preparing: {
-    label: "جاري التحضير",
+    label: "معتمد للمطبخ",
     bg: "rgba(222,165,75,0.13)",
     color: "#F3C77D",
     border: "rgba(222,165,75,0.36)",
@@ -102,8 +104,8 @@ const statusConfig: Record<
 
 const filters: { label: string; value: "all" | OrderStatus }[] = [
   { label: "الكل", value: "all" },
-  { label: "الجديدة", value: "new" },
-  { label: "قيد التحضير", value: "preparing" },
+  { label: "بانتظار الاعتماد", value: "new" },
+  { label: "معتمدة للمطبخ", value: "preparing" },
   { label: "الجاهزة", value: "ready" },
   { label: "المسلمة", value: "delivered" },
 ];
@@ -129,6 +131,7 @@ export default function OrdersPage() {
       : orders.filter((order) => order.status === filter);
 
   const newCount = orders.filter((order) => order.status === "new").length;
+  const stagedCount = orders.filter((order) => order.service_mode === "staged").length;
   const preparingCount = orders.filter(
     (order) => order.status === "preparing"
   ).length;
@@ -155,6 +158,7 @@ export default function OrdersPage() {
         id,
         order_number,
         status,
+        service_mode,
         total,
         notes,
         created_at,
@@ -520,17 +524,18 @@ export default function OrdersPage() {
       <section style={heroStyle}>
         <div>
           <p style={eyebrowStyle}>SaudiQR Orders</p>
-          <h1 style={heroTitleStyle}>الطلبات</h1>
+          <h1 style={heroTitleStyle}>مدير الصالة</h1>
           <p style={heroTextStyle}>
-            راجع الطلبات الجديدة، عدّلها عند الحاجة، ثم اعتمدها لإرسالها إلى المطبخ.
+            راجع الطلبات القادمة من QR، عدّل أو احذف أو أضف منتجات، ثم اعتمد الطلب ليظهر في المطبخ.
           </p>
         </div>
       </section>
 
       <section style={statsGridStyle}>
         <StatCard title="كل الطلبات" value={orders.length} />
-        <StatCard title="الجديدة" value={newCount} />
-        <StatCard title="قيد التحضير" value={preparingCount} />
+        <StatCard title="دفعات" value={stagedCount} />
+        <StatCard title="بانتظار الاعتماد" value={newCount} />
+        <StatCard title="معتمدة للمطبخ" value={preparingCount} />
         <StatCard title="الجاهزة" value={readyCount} />
         <StatCard title="المسلمة" value={deliveredCount} />
       </section>
@@ -579,6 +584,10 @@ export default function OrdersPage() {
 
                     <p style={mutedTextStyle}>
                       رقم الطلب: {order.order_number || "غير محدد"}
+                    </p>
+
+                    <p style={mutedTextStyle}>
+                      طريقة التقديم: {order.service_mode === "staged" ? "على دفعات" : "مرة واحدة"}
                     </p>
 
                     <p style={mutedTextStyle}>
@@ -672,7 +681,7 @@ export default function OrdersPage() {
                 ) : (
                   <div style={statusActionsStyle}>
                     <StatusAction
-                      label="جاري التحضير"
+                      label="معتمد للمطبخ"
                       onClick={() => updateStatus(order.id, "preparing")}
                       active={order.status === "preparing"}
                     />
@@ -943,7 +952,7 @@ const heroTextStyle: React.CSSProperties = {
 
 const statsGridStyle: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+  gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
   gap: "14px",
 };
 

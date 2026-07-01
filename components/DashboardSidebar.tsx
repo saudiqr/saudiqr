@@ -282,51 +282,76 @@ export default function DashboardSidebar({
       }
 
       const [
-        { count: bills },
-        { count: waiters },
-        { count: reviews },
-        { count: orders },
-        { count: kitchen },
-        { count: cashier },
-      ] = await Promise.all([
-        supabase
-          .from("bill_requests")
-          .select("*", { count: "exact", head: true })
-          .eq("branch_id", firstBranchId)
-          .eq("status", "pending"),
-        supabase
-          .from("waiter_calls")
-          .select("*", { count: "exact", head: true })
-          .eq("branch_id", firstBranchId)
-          .eq("status", "pending"),
-        supabase
-          .from("product_reviews")
-          .select("*", { count: "exact", head: true })
-          .eq("branch_id", firstBranchId)
-          .eq("seen_by_owner", false),
-        supabase
-          .from("orders")
-          .select("*", { count: "exact", head: true })
-          .eq("branch_id", firstBranchId)
-          .eq("status", "new"),
-        supabase
-          .from("orders")
-          .select("*", { count: "exact", head: true })
-          .eq("branch_id", firstBranchId)
-          .in("status", ["preparing", "ready"]),
-        supabase
-          .from("bill_requests")
-          .select("*", { count: "exact", head: true })
-          .eq("branch_id", firstBranchId)
-          .eq("status", "pending"),
-      ]);
+  { count: bills },
+  { count: waiters },
+  { count: reviews },
+  { count: orders },
+  { count: kitchen },
+  { count: cashier },
+  { count: readyWaiterItems },
+  { count: cleaning },
+] = await Promise.all([
+  supabase
+    .from("bill_requests")
+    .select("*", { count: "exact", head: true })
+    .eq("branch_id", firstBranchId)
+    .eq("status", "pending"),
 
-      setPendingBills(bills || 0);
-      setPendingWaiters(waiters || 0);
-      setNewReviews(reviews || 0);
-      setNewOrders(orders || 0);
-      setKitchenOrders(kitchen || 0);
-      setCashierBills(cashier || 0);
+  supabase
+    .from("waiter_calls")
+    .select("*", { count: "exact", head: true })
+    .eq("branch_id", firstBranchId)
+    .eq("status", "pending"),
+
+  supabase
+    .from("product_reviews")
+    .select("*", { count: "exact", head: true })
+    .eq("branch_id", firstBranchId)
+    .eq("seen_by_owner", false),
+
+  supabase
+    .from("orders")
+    .select("*", { count: "exact", head: true })
+    .eq("branch_id", firstBranchId)
+    .eq("status", "new"),
+
+  supabase
+    .from("orders")
+    .select("*", { count: "exact", head: true })
+    .eq("branch_id", firstBranchId)
+    .in("status", ["preparing", "ready"]),
+
+  supabase
+    .from("bill_requests")
+    .select("*", { count: "exact", head: true })
+    .eq("branch_id", firstBranchId)
+    .eq("status", "pending"),
+
+  supabase
+          .from("order_items")
+          .select("id, orders!inner(id, branch_id)", { count: "exact", head: true })
+          .eq("orders.branch_id", firstBranchId)
+          .eq("status", "ready"),
+
+  supabase
+    .from("tables")
+    .select("*", { count: "exact", head: true })
+    .eq("branch_id", firstBranchId)
+    .eq("status", "cleaning"),
+]);
+
+setPendingBills(bills || 0);
+setNewReviews(reviews || 0);
+setNewOrders(orders || 0);
+setKitchenOrders(kitchen || 0);
+setCashierBills(cashier || 0);
+
+setPendingWaiters(
+        (waiters || 0) +
+          (readyWaiterItems || 0) +
+          (bills || 0) +
+          (cleaning || 0)
+      );
     }
 
     loadPermissions();
@@ -384,6 +409,25 @@ export default function DashboardSidebar({
         },
         () => loadCounters()
       )
+      .on(
+  "postgres_changes",
+  {
+    event: "*",
+    schema: "public",
+    table: "order_items",
+  },
+  () => loadCounters()
+)
+.on(
+  "postgres_changes",
+  {
+    event: "*",
+    schema: "public",
+    table: "tables",
+    filter: firstBranchId ? `branch_id=eq.${firstBranchId}` : undefined,
+  },
+  () => loadCounters()
+)
       .subscribe();
 
     const refreshInterval = window.setInterval(() => {

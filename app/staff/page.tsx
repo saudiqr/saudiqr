@@ -76,31 +76,31 @@ export default async function StaffPage({ searchParams }: StaffPageProps) {
   return (
     <main
       dir="rtl"
-      className="h-screen overflow-hidden bg-[#100b07] text-white"
+      className="min-h-screen bg-[#100b07] text-white"
       style={{
         background:
           "radial-gradient(circle at top right, rgba(216,163,66,.18), transparent 34%), linear-gradient(135deg, #100b07, #1b120c 55%, #0b0705)",
       }}
     >
-      <div className="mx-auto grid h-screen max-w-6xl place-items-center px-4 py-4">
-        <div className="grid w-full items-center gap-5 lg:grid-cols-[0.9fr_520px]">
+      <div className="mx-auto grid min-h-screen max-w-6xl place-items-center px-5 py-10">
+        <div className="grid w-full items-center gap-8 lg:grid-cols-[1fr_440px]">
           <section className="hidden lg:block">
             <p className="text-sm font-black text-[#d8a342]">KARZ TECH</p>
 
-            <h2 className="mt-3 text-5xl font-black leading-tight text-[#fff7ed]">
+            <h2 className="mt-4 text-6xl font-black leading-tight text-[#fff7ed]">
               دخول سريع وآمن لفريق المطعم
             </h2>
 
-            <p className="mt-4 max-w-2xl text-base font-bold leading-8 text-[#bfa789]">
+            <p className="mt-6 max-w-2xl text-lg font-bold leading-9 text-[#bfa789]">
               كل موظف يدخل بكود خاص و PIN. الجلسة القديمة تُلغى تلقائيًا عند
-              الدخول من جهاز جديد.
+              الدخول من جهاز جديد، والصلاحيات تحدد الصفحة التي تظهر له.
             </p>
 
-            <div className="mt-6 grid max-w-xl grid-cols-3 gap-3">
-              {["جلسة واحدة", "PIN مشفر", "صلاحيات"].map((item) => (
+            <div className="mt-8 grid max-w-xl grid-cols-3 gap-3">
+              {["جلسة واحدة", "PIN مشفر", "صلاحيات حسب الدور"].map((item) => (
                 <div
                   key={item}
-                  className="rounded-2xl border border-[#6b4a25] bg-[#1b120c]/80 p-3 text-center text-sm font-black text-[#f5d18a]"
+                  className="rounded-2xl border border-[#6b4a25] bg-[#1b120c]/80 p-4 text-center text-sm font-black text-[#f5d18a]"
                 >
                   {item}
                 </div>

@@ -1,701 +1,335 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useParams, useSearchParams } from "next/navigation";
-import { supabase } from "@/lib/supabase";
-
-type BillRequest = {
-  id: string;
-  created_at: string;
-  table_id: string | null;
-  tables: {
-    id: string;
-    table_number: number;
-    section_name: string | null;
-    current_session_id: string | null;
-  } | null;
-};
-
-type OrderItem = {
-  id: string;
-  quantity: number;
-  price: number;
-  notes: string | null;
-  products: {
-    name: string;
-  } | null;
-};
-
-type Order = {
-  id: string;
-  order_number: string | null;
-  status: string;
-  total: number;
-  notes: string | null;
-  created_at: string;
-  table_id: string | null;
-  table_session_id: string | null;
-  order_items?: OrderItem[];
-};
-
-type CashierSession = {
-  request: BillRequest;
-  session_id: string | null;
-  table_id: string | null;
-  table_number: number | null;
-  section_name: string;
-  orders: Order[];
-  total: number;
-};
+import { OperationButton } from "@/components/operations/OperationButton";
+import { OperationLayout } from "@/components/operations/OperationLayout";
+import { OperationMode } from "@/components/operations/OperationMode";
+import { OperationStats } from "@/components/operations/OperationStats";
+import { OperationTabs } from "@/components/operations/OperationTabs";
+import {
+  formatMoney,
+  formatTime,
+  getPaymentMethodLabel,
+  type CashierSession,
+  type CashierTab,
+  type PaymentMethod,
+  useCashier,
+} from "@/hooks/operations/useCashier";
 
 export default function CashierPage() {
   const params = useParams();
   const searchParams = useSearchParams();
-
   const branchId = params.id as string;
   const selectedTableId = searchParams.get("tableId");
+  const [operationMode, setOperationMode] = useState(false);
 
-  const [sessions, setSessions] = useState<CashierSession[]>([]);
-  const [message, setMessage] = useState("");
-  const [loading, setLoading] = useState(true);
-
-  const visibleSessions = useMemo(() => {
-    if (!selectedTableId) return sessions;
-
-    return sessions.filter((session) => session.table_id === selectedTableId);
-  }, [sessions, selectedTableId]);
-
-  const totalAmount = visibleSessions.reduce(
-    (sum, session) => sum + session.total,
-    0
-  );
-
-  const totalOrders = visibleSessions.reduce(
-    (sum, session) => sum + session.orders.length,
-    0
-  );
-
-  async function loadCashierSessions() {
-    setLoading(true);
-
-    const { data: billRequestsData, error } = await supabase
-      .from("bill_requests")
-      .select(`
-        id,
-        created_at,
-        table_id,
-        tables (
-          id,
-          table_number,
-          section_name,
-          current_session_id
-        )
-      `)
-      .eq("branch_id", branchId)
-      .eq("status", "pending")
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      setMessage(error.message);
-      setSessions([]);
-      setLoading(false);
-      return;
-    }
-
-    const enrichedSessions = await Promise.all(
-      ((billRequestsData || []) as unknown as BillRequest[]).map(
-        async (request) => {
-          const sessionId = request.tables?.current_session_id || null;
-          const tableId = request.table_id || request.tables?.id || null;
-
-          let ordersQuery = supabase
-            .from("orders")
-            .select(`
-              id,
-              order_number,
-              status,
-              total,
-              notes,
-              created_at,
-              table_id,
-              table_session_id,
-              order_items (
-                id,
-                quantity,
-                price,
-                notes,
-                products (
-                  name
-                )
-              )
-            `)
-            .eq("branch_id", branchId)
-            .neq("status", "cancelled")
-            .order("created_at", { ascending: true });
-
-          if (sessionId) {
-            ordersQuery = ordersQuery.eq("table_session_id", sessionId);
-          } else if (tableId) {
-            ordersQuery = ordersQuery.eq("table_id", tableId);
-          }
-
-          const { data: ordersData } = await ordersQuery;
-
-          const orders = (ordersData || []) as unknown as Order[];
-          const total = orders.reduce(
-            (sum, order) => sum + Number(order.total || 0),
-            0
-          );
-
-          return {
-            request,
-            session_id: sessionId,
-            table_id: tableId,
-            table_number: request.tables?.table_number || null,
-            section_name: request.tables?.section_name || "القسم الرئيسي",
-            orders,
-            total,
-          };
-        }
-      )
-    );
-
-    setSessions(enrichedSessions);
-    setLoading(false);
-  }
-
-  async function completePayment(session: CashierSession) {
-    setMessage("");
-
-    if (session.orders.length === 0 || session.total <= 0) {
-      setMessage("لا توجد طلبات فعلية على هذه الطاولة.");
-      return;
-    }
-
-    const now = new Date().toISOString();
-
-    const { error: requestError } = await supabase
-      .from("bill_requests")
-      .update({ status: "done" })
-      .eq("id", session.request.id);
-
-    if (requestError) {
-      setMessage(requestError.message);
-      return;
-    }
-
-    if (session.session_id) {
-      const { error: sessionError } = await supabase
-        .from("table_sessions")
-        .update({
-          status: "closed",
-          bill_paid_at: now,
-          cleaning_started_at: now,
-          closed_at: now,
-        })
-        .eq("id", session.session_id);
-
-      if (sessionError) {
-        setMessage(sessionError.message);
-        return;
-      }
-    }
-
-    if (session.table_id) {
-      const { error: tableError } = await supabase
-        .from("tables")
-        .update({
-          status: "cleaning",
-          current_session_id: null,
-          last_activity_at: now,
-        })
-        .eq("id", session.table_id);
-
-      if (tableError) {
-        setMessage(tableError.message);
-        return;
-      }
-    }
-
-    setMessage("تمت المحاسبة وتحويل الطاولة إلى التنظيف.");
-    await loadCashierSessions();
-  }
-
-  useEffect(() => {
-    loadCashierSessions();
-
-    const channel = supabase
-      .channel(`cashier-bills-${branchId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "bill_requests",
-          filter: `branch_id=eq.${branchId}`,
-        },
-        () => {
-          loadCashierSessions();
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "orders",
-          filter: `branch_id=eq.${branchId}`,
-        },
-        () => {
-          loadCashierSessions();
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "tables",
-          filter: `branch_id=eq.${branchId}`,
-        },
-        () => {
-          loadCashierSessions();
-        }
-      )
-      .subscribe();
-
-    const refreshInterval = window.setInterval(() => {
-      loadCashierSessions();
-    }, 3000);
-
-    return () => {
-      supabase.removeChannel(channel);
-      window.clearInterval(refreshInterval);
-    };
-  }, [branchId]);
+  const cashier = useCashier(branchId, selectedTableId);
 
   return (
-    <div dir="rtl" style={pageStyle}>
+    <OperationLayout operationMode={operationMode}>
+      <OperationMode active={operationMode} />
+
       <section style={heroStyle}>
         <div>
-          <p style={eyebrowStyle}>المحاسبة النهائية</p>
+          <p style={eyebrowStyle}>المحاسبة اليومية</p>
           <h1 style={heroTitleStyle}>شاشة الكاشير</h1>
-          <p style={heroTextStyle}>
-            راجع طلبات الطاولة، حصّل المبلغ، ثم أنهِ الجلسة وحوّل الطاولة إلى التنظيف.
-          </p>
+          {!operationMode ? (
+            <p style={heroTextStyle}>كل يوم بيوم. اختر التاريخ، راجع الفواتير، طبق الخصم، ثم حصّل المبلغ.</p>
+          ) : null}
         </div>
 
-        <div style={heroAmountStyle}>
-          <span style={heroAmountLabelStyle}>إجمالي مطلوب</span>
-          <strong style={heroAmountValueStyle}>
-            {formatMoney(totalAmount)}
-          </strong>
+        <div style={heroRightStyle}>
+          <OperationButton
+            tone="gray"
+            onClick={() => setOperationMode((current) => !current)}
+          >
+            {operationMode ? "الخروج من وضع التشغيل" : "وضع التشغيل"}
+          </OperationButton>
+
+          <label style={dateLabelStyle}>
+            من تاريخ
+            <input
+              type="date"
+              value={cashier.dateFrom}
+              onChange={(event) => cashier.setDateFrom(event.target.value)}
+              style={dateInputStyle}
+            />
+          </label>
+
+          <label style={dateLabelStyle}>
+            إلى تاريخ
+            <input
+              type="date"
+              value={cashier.dateTo}
+              onChange={(event) => cashier.setDateTo(event.target.value)}
+              style={dateInputStyle}
+            />
+          </label>
+
+          <div style={heroAmountStyle}>
+            <span style={heroAmountLabelStyle}>المحصل حسب الفترة</span>
+            <strong style={heroAmountValueStyle}>{formatMoney(cashier.paidAmount)}</strong>
+          </div>
         </div>
       </section>
 
-      <section style={statsGridStyle}>
-        <StatCard title="طاولات بانتظار المحاسبة" value={visibleSessions.length} />
-        <StatCard title="عدد الطلبات" value={totalOrders} />
-        <StatCard title="إجمالي المبالغ" value={formatMoney(totalAmount)} />
-      </section>
+      <OperationStats
+        columns={4}
+        stats={[
+          { title: "طلبات الفواتير", value: cashier.pendingSessions.length, tone: "gold" },
+          { title: "تمت المحاسبة", value: cashier.paidSessions.length, tone: "green" },
+          { title: "إجمالي المحصل", value: formatMoney(cashier.paidAmount), tone: "blue" },
+          { title: "إجمالي الخصومات", value: formatMoney(cashier.discountAmount), tone: "red" },
+        ]}
+      />
 
-      {message ? <div style={messageStyle}>{message}</div> : null}
+      <OperationTabs<CashierTab>
+        activeTab={cashier.activeTab}
+        onChange={cashier.setActiveTab}
+        tabs={[
+          { key: "pending", label: "طلبات الفواتير", icon: "💳", count: cashier.pendingSessions.length },
+          { key: "paid", label: "تمت المحاسبة", icon: "✅", count: cashier.paidSessions.length },
+        ]}
+      />
 
-      {loading ? (
+      {cashier.message ? <div style={messageStyle}>{cashier.message}</div> : null}
+
+      {cashier.loading ? (
         <section style={emptyStyle}>جاري تحميل بيانات الكاشير...</section>
-      ) : visibleSessions.length === 0 ? (
-        <section style={emptyStyle}>
-          لا توجد طاولات طلبت الفاتورة حالياً.
-        </section>
+      ) : cashier.visibleSessions.length === 0 ? (
+        <section style={emptyStyle}>لا توجد فواتير في هذا التصنيف لهذا التاريخ.</section>
       ) : (
-        <section style={sessionsGridStyle}>
-          {visibleSessions.map((session) => (
-            <article key={session.request.id} style={sessionCardStyle}>
-              <div style={sessionHeaderStyle}>
-                <div>
-                  <h2 style={tableTitleStyle}>
-                    طاولة {session.table_number || "غير محددة"}
-                  </h2>
-                  <p style={mutedTextStyle}>{session.section_name}</p>
-                  <p style={mutedTextStyle}>
-                    طلب الفاتورة:{" "}
-                    {new Date(session.request.created_at).toLocaleTimeString(
-                      "ar-SA",
-                      {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      }
-                    )}
-                  </p>
-                </div>
-
-                <span style={billingBadgeStyle}>بانتظار المحاسبة</span>
-              </div>
-
-              <div style={ordersWrapStyle}>
-                {session.orders.length === 0 ? (
-                  <div style={itemRowStyle}>لا توجد طلبات مرتبطة بهذه الجلسة.</div>
-                ) : (
-                  session.orders.map((order) => (
-                    <div key={order.id} style={orderBoxStyle}>
-                      <div style={orderMiniHeaderStyle}>
-                        <strong>#{order.order_number || "غير محدد"}</strong>
-                        <span>{formatMoney(Number(order.total || 0))}</span>
-                      </div>
-
-                      <div style={itemsWrapStyle}>
-                        {(order.order_items || []).map((item) => {
-                          const itemTotal =
-                            Number(item.price || 0) * Number(item.quantity || 0);
-
-                          return (
-                            <div key={item.id} style={itemRowStyle}>
-                              <div style={itemInfoStyle}>
-                                <span style={itemQuantityStyle}>{item.quantity}×</span>
-                                <div>
-                                  <strong style={itemNameStyle}>
-                                    {item.products?.name || "منتج غير معروف"}
-                                  </strong>
-                                  {item.notes ? (
-                                    <p style={itemNoteStyle}>ملاحظة: {item.notes}</p>
-                                  ) : null}
-                                </div>
-                              </div>
-
-                              <span style={itemPriceStyle}>
-                                {formatMoney(itemTotal)}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {order.notes ? (
-                        <div style={notesStyle}>ملاحظات الطلب: {order.notes}</div>
-                      ) : null}
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div style={totalBoxStyle}>
-                <span>الإجمالي النهائي</span>
-                <strong>{formatMoney(session.total)}</strong>
-              </div>
-
-              <button
-                onClick={() => completePayment(session)}
-                disabled={session.orders.length === 0 || session.total <= 0}
-                style={{
-                  ...primaryButtonStyle,
-                  opacity: session.orders.length === 0 || session.total <= 0 ? 0.45 : 1,
-                  cursor:
-                    session.orders.length === 0 || session.total <= 0
-                      ? "not-allowed"
-                      : "pointer",
-                }}
-              >
-                تمت المحاسبة وتحويل الطاولة للتنظيف
-              </button>
-            </article>
+        <section style={sessionsGridStyle(operationMode)}>
+          {cashier.visibleSessions.map((session) => (
+            <CashierSessionCard
+              key={session.request.id}
+              session={session}
+              discountValue={cashier.discountInputs[session.request.id] || ""}
+              paymentMethod={cashier.paymentMethods[session.request.id] || "cash"}
+              transactionRef={cashier.transactionRefs[session.request.id] || ""}
+              onDiscountChange={(value) => cashier.setDiscountInput(session.request.id, value)}
+              onApplyDiscount={() => cashier.applyDiscount(session)}
+              onRemoveDiscount={() => cashier.removeDiscount(session)}
+              onPaymentMethodChange={(value) => cashier.setPaymentMethod(session.request.id, value)}
+              onTransactionRefChange={(value) => cashier.setTransactionRef(session.request.id, value)}
+              onCompletePayment={() => cashier.completePayment(session)}
+            />
           ))}
         </section>
       )}
-    </div>
+    </OperationLayout>
   );
 }
 
-function StatCard({
-  title,
-  value,
+function CashierSessionCard({
+  session,
+  discountValue,
+  paymentMethod,
+  transactionRef,
+  onDiscountChange,
+  onApplyDiscount,
+  onRemoveDiscount,
+  onPaymentMethodChange,
+  onTransactionRefChange,
+  onCompletePayment,
 }: {
-  title: string;
-  value: number | string;
+  session: CashierSession;
+  discountValue: string;
+  paymentMethod: PaymentMethod;
+  transactionRef: string;
+  onDiscountChange: (value: string) => void;
+  onApplyDiscount: () => void;
+  onRemoveDiscount: () => void;
+  onPaymentMethodChange: (value: PaymentMethod) => void;
+  onTransactionRefChange: (value: string) => void;
+  onCompletePayment: () => void;
 }) {
+  const isPending = session.request.status === "pending";
+
   return (
-    <div style={statCardStyle}>
-      <p style={statTitleStyle}>{title}</p>
-      <strong style={statValueStyle}>{value}</strong>
+    <article style={sessionCardStyle}>
+      <div style={sessionHeaderStyle}>
+        <div>
+          <h2 style={tableTitleStyle}>طاولة {session.table_number || "غير محددة"}</h2>
+          <p style={mutedTextStyle}>{session.section_name}</p>
+          <p style={mutedTextStyle}>
+            {isPending ? "طلب الفاتورة" : "وقت المحاسبة"}: {formatTime(session.paidAt || session.request.created_at)}
+          </p>
+        </div>
+
+        <span style={isPending ? billingBadgeStyle : paidBadgeStyle}>
+          {isPending ? "بانتظار المحاسبة" : "تمت المحاسبة"}
+        </span>
+      </div>
+
+      <div style={ordersWrapStyle}>
+        {session.orders.length === 0 ? (
+          <div style={itemRowStyle}>لا توجد طلبات مرتبطة بهذه الجلسة.</div>
+        ) : (
+          session.orders.map((order) => (
+            <div key={order.id} style={orderBoxStyle}>
+              <div style={orderMiniHeaderStyle}>
+                <strong>#{order.order_number || "غير محدد"}</strong>
+                <span>{formatMoney(Number(order.total || 0))}</span>
+              </div>
+
+              <div style={itemsWrapStyle}>
+                {(order.order_items || []).map((item) => {
+                  const itemTotal = Number(item.price || 0) * Number(item.quantity || 0);
+                  return (
+                    <div key={item.id} style={itemRowStyle}>
+                      <div style={itemInfoStyle}>
+                        <span style={itemQuantityStyle}>{item.quantity}×</span>
+                        <div>
+                          <strong style={itemNameStyle}>{item.products?.name || "منتج غير معروف"}</strong>
+                          {item.notes ? <p style={itemNoteStyle}>ملاحظة: {item.notes}</p> : null}
+                        </div>
+                      </div>
+                      <span style={itemPriceStyle}>{formatMoney(itemTotal)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {order.notes ? <div style={notesStyle}>ملاحظات الطلب: {order.notes}</div> : null}
+            </div>
+          ))
+        )}
+      </div>
+
+      <div style={totalsBoxStyle}>
+        <LineTotal label="الإجمالي قبل الخصم" value={formatMoney(session.subtotal)} />
+        <LineTotal label="الخصم" value={`- ${formatMoney(session.discountAmount)}`} />
+        <LineTotal label="المطلوب تحصيله" value={formatMoney(session.paidAmount)} strong />
+      </div>
+
+      {session.discountCode ? (
+        <div style={discountAppliedStyle}>
+          كود الخصم: <strong>{session.discountCode}</strong>
+          {isPending ? (
+            <button onClick={onRemoveDiscount} style={smallDangerButtonStyle}>إزالة</button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {isPending ? (
+        <div style={discountBoxStyle}>
+          <input
+            value={discountValue}
+            onChange={(event) => onDiscountChange(event.target.value)}
+            placeholder="كود الخصم"
+            style={discountInputStyle}
+          />
+          <button onClick={onApplyDiscount} style={secondaryButtonStyle}>تطبيق الخصم</button>
+        </div>
+      ) : null}
+
+      {isPending ? (
+        <div style={paymentBoxStyle}>
+          <label style={paymentLabelStyle}>نوع الدفع</label>
+          <select
+            value={paymentMethod}
+            onChange={(event) => onPaymentMethodChange(event.target.value as PaymentMethod)}
+            style={paymentSelectStyle}
+          >
+            <option value="cash">كاش</option>
+            <option value="mada">مدى</option>
+            <option value="visa">فيزا</option>
+            <option value="installments">أقساط</option>
+          </select>
+
+          {paymentMethod !== "cash" ? (
+            <input
+              value={transactionRef}
+              onChange={(event) => onTransactionRefChange(event.target.value)}
+              placeholder="رقم العملية"
+              style={paymentInputStyle}
+            />
+          ) : null}
+        </div>
+      ) : (
+        <div style={paymentInfoStyle}>
+          <LineTotal label="نوع الدفع" value={getPaymentMethodLabel(session.paymentMethod)} />
+          {session.paymentMethod && session.paymentMethod !== "cash" ? (
+            <LineTotal label="رقم العملية" value={session.transactionReference || "غير مسجل"} />
+          ) : null}
+        </div>
+      )}
+
+      {isPending ? (
+        <OperationButton
+          tone="gold"
+          fullWidth
+          onClick={onCompletePayment}
+          disabled={session.orders.length === 0 || session.subtotal <= 0}
+          style={{ marginTop: "10px" }}
+        >
+          تمت المحاسبة وتحويل الطاولة للتنظيف
+        </OperationButton>
+      ) : null}
+    </article>
+  );
+}
+
+function LineTotal({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div style={lineTotalStyle}>
+      <span>{label}</span>
+      <strong style={{ color: strong ? "#DEA54B" : "#FFF8F0" }}>{value}</strong>
     </div>
   );
 }
 
-function formatMoney(value: number) {
-  return `${Number(value || 0).toFixed(2)} ريال`;
-}
-
-const pageStyle: React.CSSProperties = {
-  width: "100%",
-  minHeight: "100vh",
-  color: "#FFF8F0",
-  display: "grid",
-  gap: "16px",
-};
-
-const heroStyle: React.CSSProperties = {
+const heroStyle: CSSProperties = {
   background: "linear-gradient(135deg, #241B16, #1C1612)",
   border: "1px solid #4A3425",
   borderRadius: "30px",
-  padding: "22px",
-  boxShadow: "0 22px 70px rgba(0,0,0,0.28)",
+  padding: "18px",
+  boxShadow: "0 22px 70px rgba(0,0,0,.28)",
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  gap: "18px",
+  gap: "16px",
 };
-
-const eyebrowStyle: React.CSSProperties = {
-  margin: "0 0 8px",
-  color: "#DEA54B",
-  fontWeight: 950,
-  fontSize: "14px",
-};
-
-const heroTitleStyle: React.CSSProperties = {
-  margin: 0,
-  fontSize: "38px",
-  fontWeight: 950,
-  color: "#FFF8F0",
-};
-
-const heroTextStyle: React.CSSProperties = {
-  margin: "10px 0 0",
-  color: "#C8B6A4",
-  fontWeight: 800,
-  fontSize: "15px",
-  lineHeight: 1.8,
-};
-
-const heroAmountStyle: React.CSSProperties = {
-  minWidth: "210px",
-  borderRadius: "26px",
-  border: "1px solid rgba(198,138,61,0.35)",
-  background: "rgba(198,138,61,0.10)",
-  padding: "16px",
-  textAlign: "center",
-};
-
-const heroAmountLabelStyle: React.CSSProperties = {
-  display: "block",
-  color: "#C8B6A4",
-  fontSize: "13px",
-  fontWeight: 900,
-};
-
-const heroAmountValueStyle: React.CSSProperties = {
-  display: "block",
-  marginTop: "8px",
-  color: "#DEA54B",
-  fontSize: "26px",
-  fontWeight: 950,
-  whiteSpace: "nowrap",
-};
-
-const statsGridStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-  gap: "12px",
-};
-
-const statCardStyle: React.CSSProperties = {
-  background: "#241B16",
-  border: "1px solid #4A3425",
-  borderRadius: "28px",
-  padding: "16px",
-  boxShadow: "0 16px 48px rgba(0,0,0,0.22)",
-};
-
-const statTitleStyle: React.CSSProperties = {
-  margin: 0,
-  color: "#C8B6A4",
-  fontWeight: 950,
-  fontSize: "14px",
-};
-
-const statValueStyle: React.CSSProperties = {
-  display: "block",
-  marginTop: "8px",
-  color: "#FFF8F0",
-  fontWeight: 950,
-  fontSize: "30px",
-};
-
-const emptyStyle: React.CSSProperties = {
-  background: "#241B16",
-  border: "1px solid #4A3425",
-  borderRadius: "30px",
-  padding: "28px",
-  textAlign: "center",
-  color: "#C8B6A4",
-  fontWeight: 950,
-};
-
-const messageStyle: React.CSSProperties = {
-  background: "rgba(198,138,61,0.12)",
-  border: "1px solid rgba(198,138,61,0.35)",
-  borderRadius: "18px",
-  padding: "14px",
-  color: "#DEA54B",
-  fontWeight: 950,
-};
-
-const sessionsGridStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-  gap: "14px",
-  alignItems: "start",
-};
-
-const sessionCardStyle: React.CSSProperties = {
-  background: "#241B16",
-  border: "1px solid #4A3425",
-  borderRadius: "30px",
-  padding: "16px",
-  boxShadow: "0 18px 55px rgba(0,0,0,0.24)",
-  alignSelf: "start",
-};
-
-const sessionHeaderStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: "12px",
-};
-
-const tableTitleStyle: React.CSSProperties = {
-  margin: 0,
-  color: "#FFF8F0",
-  fontSize: "28px",
-  fontWeight: 950,
-};
-
-const mutedTextStyle: React.CSSProperties = {
-  margin: "6px 0 0",
-  color: "#C8B6A4",
-  fontWeight: 850,
-  fontSize: "13px",
-};
-
-const billingBadgeStyle: React.CSSProperties = {
-  borderRadius: "999px",
-  padding: "9px 13px",
-  background: "rgba(198,138,61,0.14)",
-  color: "#DEA54B",
-  border: "1px solid rgba(198,138,61,0.34)",
-  fontWeight: 950,
-  whiteSpace: "nowrap",
-  fontSize: "13px",
-};
-
-const ordersWrapStyle: React.CSSProperties = {
-  display: "grid",
-  gap: "12px",
-  marginTop: "15px",
-};
-
-const orderBoxStyle: React.CSSProperties = {
-  border: "1px solid rgba(74,52,37,0.95)",
-  background: "#2A211C",
-  borderRadius: "22px",
-  padding: "12px",
-};
-
-const orderMiniHeaderStyle: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: "10px",
-  color: "#DEA54B",
-  fontWeight: 950,
-  marginBottom: "10px",
-};
-
-const itemsWrapStyle: React.CSSProperties = {
-  display: "grid",
-  gap: "8px",
-};
-
-const itemRowStyle: React.CSSProperties = {
-  border: "1px solid rgba(74,52,37,0.95)",
-  background: "#241B16",
-  borderRadius: "18px",
-  padding: "11px",
-  color: "#FFF8F0",
-  fontWeight: 850,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "10px",
-};
-
-const itemInfoStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: "9px",
-  minWidth: 0,
-};
-
-const itemQuantityStyle: React.CSSProperties = {
-  minWidth: "38px",
-  height: "32px",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  borderRadius: "13px",
-  background: "rgba(198,138,61,0.14)",
-  border: "1px solid rgba(198,138,61,0.32)",
-  color: "#DEA54B",
-  fontWeight: 950,
-};
-
-const itemNameStyle: React.CSSProperties = {
-  color: "#FFF8F0",
-  fontSize: "15px",
-};
-
-const itemNoteStyle: React.CSSProperties = {
-  margin: "5px 0 0",
-  color: "#C8B6A4",
-  fontSize: "12px",
-  fontWeight: 800,
-};
-
-const itemPriceStyle: React.CSSProperties = {
-  color: "#DEA54B",
-  fontWeight: 950,
-  fontSize: "14px",
-  whiteSpace: "nowrap",
-};
-
-const notesStyle: React.CSSProperties = {
-  marginTop: "10px",
-  border: "1px solid rgba(198,138,61,0.34)",
-  background: "rgba(198,138,61,0.10)",
-  color: "#F3C77E",
-  borderRadius: "18px",
-  padding: "11px",
-  fontWeight: 900,
-  fontSize: "14px",
-};
-
-const totalBoxStyle: React.CSSProperties = {
-  marginTop: "13px",
-  borderTop: "1px solid rgba(74,52,37,0.95)",
-  paddingTop: "13px",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  color: "#FFF8F0",
-  fontWeight: 950,
-  fontSize: "18px",
-};
-
-const primaryButtonStyle: React.CSSProperties = {
-  width: "100%",
-  marginTop: "13px",
-  border: "0",
-  borderRadius: "18px",
-  padding: "14px",
-  background: "linear-gradient(135deg, #C68A3D, #DEA54B)",
-  color: "#16110E",
-  fontWeight: 950,
-};
+const eyebrowStyle: CSSProperties = { margin: "0 0 7px", color: "#DEA54B", fontWeight: 950, fontSize: "13px" };
+const heroTitleStyle: CSSProperties = { margin: 0, fontSize: "36px", fontWeight: 950, color: "#FFF8F0", lineHeight: 1 };
+const heroTextStyle: CSSProperties = { margin: "10px 0 0", color: "#C8B6A4", fontWeight: 800, fontSize: "14px", lineHeight: 1.7 };
+const heroRightStyle: CSSProperties = { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" };
+const dateLabelStyle: CSSProperties = { display: "grid", gap: "7px", color: "#C8B6A4", fontSize: "12px", fontWeight: 950 };
+const dateInputStyle: CSSProperties = { border: "1px solid #4A3425", background: "#2A211C", color: "#FFF8F0", borderRadius: "16px", padding: "12px", fontWeight: 900, outline: "none" };
+const heroAmountStyle: CSSProperties = { minWidth: "190px", borderRadius: "24px", border: "1px solid rgba(198,138,61,.35)", background: "rgba(198,138,61,.10)", padding: "14px", textAlign: "center" };
+const heroAmountLabelStyle: CSSProperties = { display: "block", color: "#C8B6A4", fontSize: "12px", fontWeight: 900 };
+const heroAmountValueStyle: CSSProperties = { display: "block", marginTop: "7px", color: "#DEA54B", fontSize: "24px", fontWeight: 950, whiteSpace: "nowrap" };
+const emptyStyle: CSSProperties = { background: "#241B16", border: "1px solid #4A3425", borderRadius: "30px", padding: "28px", textAlign: "center", color: "#C8B6A4", fontWeight: 950 };
+const messageStyle: CSSProperties = { background: "rgba(198,138,61,.12)", border: "1px solid rgba(198,138,61,.35)", borderRadius: "18px", padding: "14px", color: "#DEA54B", fontWeight: 950 };
+const sessionsGridStyle = (_operationMode: boolean): CSSProperties => ({ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "10px", alignItems: "start" });
+const sessionCardStyle: CSSProperties = { background: "#241B16", border: "1px solid #4A3425", borderRadius: "26px", padding: "13px", boxShadow: "0 18px 55px rgba(0,0,0,.24)", height: "620px", display: "flex", flexDirection: "column", overflow: "hidden" };
+const sessionHeaderStyle: CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px", borderBottom: "1px solid #4A3425", paddingBottom: "10px" };
+const tableTitleStyle: CSSProperties = { margin: 0, color: "#FFF8F0", fontSize: "25px", fontWeight: 950, lineHeight: 1 };
+const mutedTextStyle: CSSProperties = { margin: "6px 0 0", color: "#C8B6A4", fontWeight: 850, fontSize: "12px" };
+const billingBadgeStyle: CSSProperties = { borderRadius: "999px", padding: "8px 11px", background: "rgba(198,138,61,.14)", color: "#DEA54B", border: "1px solid rgba(198,138,61,.34)", fontWeight: 950, whiteSpace: "nowrap", fontSize: "12px" };
+const paidBadgeStyle: CSSProperties = { ...billingBadgeStyle, background: "rgba(63,163,108,.14)", color: "#9DE7B4", border: "1px solid rgba(63,163,108,.34)" };
+const ordersWrapStyle: CSSProperties = { display: "grid", gap: "9px", marginTop: "11px", flex: 1, minHeight: 0, overflowY: "auto" };
+const orderBoxStyle: CSSProperties = { border: "1px solid rgba(74,52,37,.95)", background: "#2A211C", borderRadius: "20px", padding: "10px" };
+const orderMiniHeaderStyle: CSSProperties = { display: "flex", justifyContent: "space-between", gap: "8px", color: "#DEA54B", fontWeight: 950, marginBottom: "9px", fontSize: "13px" };
+const itemsWrapStyle: CSSProperties = { display: "grid", gap: "7px" };
+const itemRowStyle: CSSProperties = { border: "1px solid rgba(74,52,37,.95)", background: "#241B16", borderRadius: "16px", padding: "9px", color: "#FFF8F0", fontWeight: 850, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" };
+const itemInfoStyle: CSSProperties = { display: "flex", alignItems: "center", gap: "8px", minWidth: 0 };
+const itemQuantityStyle: CSSProperties = { minWidth: "34px", height: "30px", display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: "12px", background: "rgba(198,138,61,.14)", border: "1px solid rgba(198,138,61,.32)", color: "#DEA54B", fontWeight: 950 };
+const itemNameStyle: CSSProperties = { color: "#FFF8F0", fontSize: "13px" };
+const itemNoteStyle: CSSProperties = { margin: "4px 0 0", color: "#C8B6A4", fontSize: "11px", fontWeight: 800 };
+const itemPriceStyle: CSSProperties = { color: "#DEA54B", fontWeight: 950, fontSize: "12px", whiteSpace: "nowrap" };
+const notesStyle: CSSProperties = { marginTop: "8px", border: "1px solid rgba(198,138,61,.34)", background: "rgba(198,138,61,.10)", color: "#F3C77E", borderRadius: "16px", padding: "9px", fontWeight: 900, fontSize: "12px" };
+const totalsBoxStyle: CSSProperties = { marginTop: "10px", border: "1px solid rgba(74,52,37,.95)", background: "#2A211C", borderRadius: "18px", padding: "10px", display: "grid", gap: "7px" };
+const lineTotalStyle: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", color: "#C8B6A4", fontWeight: 900, fontSize: "13px" };
+const discountBoxStyle: CSSProperties = { marginTop: "10px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px" };
+const discountInputStyle: CSSProperties = { border: "1px solid #4A3425", background: "#2A211C", color: "#FFF8F0", borderRadius: "16px", padding: "11px", fontWeight: 900, outline: "none", minWidth: 0 };
+const secondaryButtonStyle: CSSProperties = { border: "1px solid rgba(198,138,61,.45)", borderRadius: "16px", padding: "11px", background: "rgba(198,138,61,.12)", color: "#DEA54B", fontWeight: 950, cursor: "pointer", whiteSpace: "nowrap" };
+const discountAppliedStyle: CSSProperties = { marginTop: "10px", border: "1px solid rgba(63,163,108,.34)", background: "rgba(63,163,108,.12)", color: "#B9F6CE", borderRadius: "16px", padding: "10px", fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" };
+const smallDangerButtonStyle: CSSProperties = { border: "1px solid rgba(239,68,68,.35)", background: "rgba(239,68,68,.12)", color: "#FCA5A5", borderRadius: "12px", padding: "7px 9px", fontWeight: 900, cursor: "pointer" };
+const paymentBoxStyle: CSSProperties = { marginTop: "10px", border: "1px solid rgba(74,52,37,.95)", background: "#2A211C", borderRadius: "18px", padding: "10px", display: "grid", gap: "8px" };
+const paymentLabelStyle: CSSProperties = { color: "#C8B6A4", fontWeight: 950, fontSize: "12px" };
+const paymentSelectStyle: CSSProperties = { width: "100%", border: "1px solid #4A3425", background: "#241B16", color: "#FFF8F0", borderRadius: "15px", padding: "11px", fontWeight: 900, outline: "none" };
+const paymentInputStyle: CSSProperties = { width: "100%", border: "1px solid #4A3425", background: "#241B16", color: "#FFF8F0", borderRadius: "15px", padding: "11px", fontWeight: 900, outline: "none" };
+const paymentInfoStyle: CSSProperties = { marginTop: "10px", border: "1px solid rgba(63,163,108,.28)", background: "rgba(63,163,108,.10)", borderRadius: "18px", padding: "10px", display: "grid", gap: "7px" };

@@ -16,6 +16,7 @@ type Product = {
   image_url: string | null;
   active: boolean;
   stock_quantity: number | null;
+  featured?: boolean | null;
   reviews?: Review[];
 };
 
@@ -48,6 +49,8 @@ type CartItem = {
   note: string;
 };
 
+type ServiceMode = "once" | "staged";
+
 type TableData = {
   id: string;
   table_number: number;
@@ -61,6 +64,21 @@ type BillReviewProduct = {
   averageRating: number | null;
   reviewsCount: number;
 };
+
+type CustomerOrder = {
+  id: string;
+  status: string;
+  order_number: string | null;
+  created_at: string;
+  order_items?: { status: string | null }[];
+};
+
+const ORDER_STEPS = [
+  { key: "new", label: "تحت المراجعة", icon: "🟡" },
+  { key: "preparing", label: "جاري التحضير", icon: "🔥" },
+  { key: "ready", label: "جاهز", icon: "🟢" },
+  { key: "delivered", label: "تم التسليم", icon: "✅" },
+];
 
 export default function MenuPage() {
   const params = useParams();
@@ -76,6 +94,7 @@ export default function MenuPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [notes, setNotes] = useState("");
+  const [serviceMode, setServiceMode] = useState<ServiceMode>("once");
   const [sending, setSending] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -88,18 +107,38 @@ export default function MenuPage() {
   const [productQuantities, setProductQuantities] = useState<Record<string, number>>({});
   const [productNotes, setProductNotes] = useState<Record<string, string>>({});
   const [openProductNoteIds, setOpenProductNoteIds] = useState<Record<string, boolean>>({});
-  const [showCartDetails, setShowCartDetails] = useState(false);
+  const [showCartSheet, setShowCartSheet] = useState(false);
   const [showBillReview, setShowBillReview] = useState(false);
   const [billReviewProducts, setBillReviewProducts] = useState<BillReviewProduct[]>([]);
   const [currentTableNumber, setCurrentTableNumber] = useState<number | null>(null);
   const [currentTableSessionId, setCurrentTableSessionId] = useState<string | null>(null);
   const [hasTableOrders, setHasTableOrders] = useState(false);
+  const [customerOrders, setCustomerOrders] = useState<CustomerOrder[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  function showSuccessToast(message: string, duration = 2000) {
+    setErrorMessage("");
+    setSuccessMessage(message);
+
+    window.setTimeout(() => {
+      setSuccessMessage("");
+    }, duration);
+  }
+
+  function showErrorToast(message: string, duration = 2500) {
+    setSuccessMessage("");
+    setErrorMessage(message);
+
+    window.setTimeout(() => {
+      setErrorMessage("");
+    }, duration);
+  }
 
   const primaryColor = settings?.primary_color || "#C68A3D";
   const secondaryColor = settings?.secondary_color || "#16110E";
 
   const total = useMemo(
-    () => cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0),
+    () => cart.reduce((sum, item) => sum + Number(item.product.price || 0) * item.quantity, 0),
     [cart]
   );
 
@@ -107,6 +146,30 @@ export default function MenuPage() {
     () => cart.reduce((sum, item) => sum + item.quantity, 0),
     [cart]
   );
+
+  const featuredProducts = useMemo(() => {
+    return categories
+      .flatMap((category) => category.products || [])
+      .filter((product) => product.active && (product.stock_quantity ?? 0) > 0 && product.featured)
+      .slice(0, 8);
+  }, [categories]);
+
+  const filteredCategories = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return categories;
+
+    return categories
+      .map((category) => ({
+        ...category,
+        products: (category.products || []).filter((product) =>
+          `${product.name} ${product.description || ""}`.toLowerCase().includes(query)
+        ),
+      }))
+      .filter((category) => category.products.length > 0);
+  }, [categories, searchQuery]);
+
+  const latestOrder = useMemo(() => customerOrders[0] || null, [customerOrders]);
+  const serviceAverage = getAverageRating(serviceReviews);
 
   function getDeviceId() {
     let deviceId = localStorage.getItem("saudiqr_device_id");
@@ -121,9 +184,8 @@ export default function MenuPage() {
 
   function getAverageRating(reviews?: Review[]) {
     if (!reviews || reviews.length === 0) return null;
-
-    const total = reviews.reduce((sum, review) => sum + review.rating, 0);
-    return total / reviews.length;
+    const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
+    return totalRating / reviews.length;
   }
 
   function getProductById(productId: string) {
@@ -159,16 +221,13 @@ export default function MenuPage() {
     }
 
     const { data, error } = await query;
-
     if (error) return false;
-
     return (data || []).length > 0;
   }
 
   async function getTableData(branchId: string): Promise<TableData | null> {
     if (tableIdParam) {
       const { data, error } = await supabase
-      
         .from("tables")
         .select("id, table_number, current_session_id, status")
         .eq("branch_id", branchId)
@@ -179,6 +238,7 @@ export default function MenuPage() {
     }
 
     if (!tableNumber) return null;
+
     const { data, error } = await supabase
       .from("tables")
       .select("id, table_number, current_session_id, status")
@@ -187,15 +247,10 @@ export default function MenuPage() {
       .single();
 
     if (error || !data) return null;
-
     return data as TableData;
   }
 
-  async function logActivity(
-    branchId: string,
-    tableId: string,
-    activityType: string
-  ) {
+  async function logActivity(branchId: string, tableId: string, activityType: string) {
     await supabase.from("table_activity_logs").insert({
       branch_id: branchId,
       table_id: tableId,
@@ -212,13 +267,7 @@ export default function MenuPage() {
     const now = new Date().toISOString();
 
     if (currentSessionId) {
-      await supabase
-        .from("tables")
-        .update({
-          last_activity_at: now,
-        })
-        .eq("id", tableId);
-
+      await supabase.from("tables").update({ last_activity_at: now }).eq("id", tableId);
       return currentSessionId;
     }
 
@@ -233,9 +282,7 @@ export default function MenuPage() {
       .select("id")
       .single();
 
-    if (sessionError || !sessionData) {
-      throw new Error("فشل إنشاء جلسة الطاولة.");
-    }
+    if (sessionError || !sessionData) throw new Error("فشل إنشاء جلسة الطاولة.");
 
     await supabase
       .from("tables")
@@ -276,8 +323,30 @@ export default function MenuPage() {
 
     const hasOrders = Number(itemsCount || 0) > 0;
     setHasTableOrders(hasOrders);
-
     return hasOrders;
+  }
+
+  async function loadCustomerOrders(tableSessionId: string | null) {
+    if (!branch || !tableSessionId) {
+      setCustomerOrders([]);
+      return;
+    }
+
+    const { data } = await supabase
+      .from("orders")
+      .select(`
+        id,
+        status,
+        order_number,
+        created_at,
+        order_items(status)
+      `)
+      .eq("branch_id", branch.id)
+      .eq("table_session_id", tableSessionId)
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    setCustomerOrders((data || []) as unknown as CustomerOrder[]);
   }
 
   async function trackMenuOpened(branchData: Branch) {
@@ -286,20 +355,14 @@ export default function MenuPage() {
     const tableData = await getTableData(branchData.id);
     if (!tableData) return;
 
-    if (tableData.table_number) {
-      setCurrentTableNumber(tableData.table_number);
-    }
+    if (tableData.table_number) setCurrentTableNumber(tableData.table_number);
 
     setCurrentTableSessionId(tableData.current_session_id);
     await checkTableHasOrders(tableData.current_session_id);
+    await loadCustomerOrders(tableData.current_session_id);
 
-    if (
-      tableData.status !== "billing" &&
-      tableData.status !== "cleaning" &&
-      tableData.status !== "closed"
-    ) {
+    if (!["billing", "cleaning", "closed"].includes(tableData.status || "")) {
       const now = new Date().toISOString();
-
       const tableSessionId = await getOrCreateTableSession(
         branchData.id,
         tableData.id,
@@ -318,14 +381,13 @@ export default function MenuPage() {
 
       setCurrentTableSessionId(tableSessionId);
       await checkTableHasOrders(tableSessionId);
+      await loadCustomerOrders(tableSessionId);
     }
 
     const key = `saudiqr_menu_opened_${branchData.id}_${tableData.id}`;
-
     if (sessionStorage.getItem(key)) return;
 
     sessionStorage.setItem(key, "true");
-
     await logActivity(branchData.id, tableData.id, "menu_opened");
   }
 
@@ -336,14 +398,11 @@ export default function MenuPage() {
     if (!tableData) return;
 
     const key = `saudiqr_cart_started_${branch.id}_${tableData.id}`;
-
     if (sessionStorage.getItem(key)) return;
 
     sessionStorage.setItem(key, "true");
-
     await logActivity(branch.id, tableData.id, "cart_started");
   }
-
 
   function getUnavailableTableMessage(status: TableData["status"]) {
     if (status === "cleaning") {
@@ -400,10 +459,8 @@ export default function MenuPage() {
       businessName = businessData?.name || null;
     }
 
-    setBranch({
-      ...(branchData as Branch),
-      business_name: businessName,
-    });
+    const nextBranch = { ...(branchData as Branch), business_name: businessName };
+    setBranch(nextBranch);
 
     const { data: settingsData } = await supabase
       .from("branch_settings")
@@ -416,22 +473,15 @@ export default function MenuPage() {
     if (tableNumber || tableIdParam) {
       const tableData = await getTableData(branchData.id);
 
-      if (tableData?.table_number) {
-        setCurrentTableNumber(tableData.table_number);
-      }
+      if (tableData?.table_number) setCurrentTableNumber(tableData.table_number);
 
       if (tableData) {
         setCurrentTableSessionId(tableData.current_session_id);
         await checkTableHasOrders(tableData.current_session_id);
       }
 
-      if (
-        tableData?.status === "cleaning" ||
-        tableData?.status === "billing" ||
-        tableData?.status === "closed"
-      ) {
-        const unavailableMessage = getUnavailableTableMessage(tableData.status);
-
+      if (["cleaning", "billing", "closed"].includes(tableData?.status || "")) {
+        const unavailableMessage = getUnavailableTableMessage(tableData?.status || null);
         setTableUnavailableTitle(unavailableMessage.title);
         setTableUnavailableDescription(unavailableMessage.description);
         setTableClosed(true);
@@ -441,8 +491,6 @@ export default function MenuPage() {
         return;
       }
     }
-
-    await trackMenuOpened(branchData);
 
     const { data: categoriesData } = await supabase
       .from("categories")
@@ -456,7 +504,8 @@ export default function MenuPage() {
           price,
           image_url,
           active,
-          stock_quantity
+          stock_quantity,
+          featured
         )
       `)
       .eq("branch_id", branchData.id)
@@ -469,21 +518,15 @@ export default function MenuPage() {
 
     const reviews = reviewsData || [];
 
-    const categoriesWithReviews = ((categoriesData || []) as Category[]).map(
-      (category) => ({
-        ...category,
-        products: (category.products || []).map((product) => ({
-          ...product,
-          reviews: reviews
-            .filter(
-              (review) =>
-                review.review_type === "product" &&
-                review.product_id === product.id
-            )
-            .map((review) => ({ rating: review.rating })),
-        })),
-      })
-    );
+    const categoriesWithReviews = ((categoriesData || []) as Category[]).map((category) => ({
+      ...category,
+      products: (category.products || []).map((product) => ({
+        ...product,
+        reviews: reviews
+          .filter((review) => review.review_type === "product" && review.product_id === product.id)
+          .map((review) => ({ rating: review.rating })),
+      })),
+    }));
 
     setServiceReviews(
       reviews
@@ -493,6 +536,8 @@ export default function MenuPage() {
 
     setCategories(categoriesWithReviews);
     setLoading(false);
+
+    await trackMenuOpened(nextBranch);
   }
 
   function getSelectedQuantity(productId: string) {
@@ -505,48 +550,35 @@ export default function MenuPage() {
       [productId]: Math.min((current[productId] || 0) + 1, 99),
     }));
 
-    setOpenProductNoteIds((current) => ({
-      ...current,
-      [productId]: true,
-    }));
+    setOpenProductNoteIds((current) => ({ ...current, [productId]: true }));
   }
 
   function decreaseProductQuantity(productId: string) {
     setProductQuantities((current) => {
       const nextQuantity = Math.max((current[productId] || 0) - 1, 0);
-
       if (nextQuantity === 0) {
-        setOpenProductNoteIds((notesState) => ({
-          ...notesState,
-          [productId]: false,
-        }));
+        setOpenProductNoteIds((notesState) => ({ ...notesState, [productId]: false }));
       }
-
-      return {
-        ...current,
-        [productId]: nextQuantity,
-      };
+      return { ...current, [productId]: nextQuantity };
     });
   }
 
   function updateProductNote(productId: string, note: string) {
-    setProductNotes((current) => ({
-      ...current,
-      [productId]: note,
-    }));
+    setProductNotes((current) => ({ ...current, [productId]: note }));
   }
 
   function addToCart(product: Product, quantity = 1) {
+    if ((product.stock_quantity ?? 0) <= 0 || !product.active) {
+      setErrorMessage("هذا المنتج غير متوفر حالياً.");
+      return;
+    }
+
     if (quantity <= 0) {
       setErrorMessage("اختر الكمية أولاً.");
       return;
     }
 
-    if (cart.length === 0) {
-      trackCartStarted();
-    }
-
-    setShowCartDetails(false);
+    if (cart.length === 0) trackCartStarted();
 
     const note = (productNotes[product.id] || "").trim();
 
@@ -566,28 +598,14 @@ export default function MenuPage() {
       return [...currentCart, { product, quantity, note }];
     });
 
-    setProductNotes((current) => ({
-      ...current,
-      [product.id]: "",
-    }));
-
-    setProductQuantities((current) => ({
-      ...current,
-      [product.id]: 0,
-    }));
-
-    setOpenProductNoteIds((current) => ({
-      ...current,
-      [product.id]: false,
-    }));
-
-    setSuccessMessage("تمت إضافة المنتج إلى السلة.");
-    setTimeout(() => setSuccessMessage(""), 1800);
+    setProductNotes((current) => ({ ...current, [product.id]: "" }));
+    setProductQuantities((current) => ({ ...current, [product.id]: 0 }));
+    setOpenProductNoteIds((current) => ({ ...current, [product.id]: false }));
+    // CX: لا نفتح السلة تلقائياً بعد كل إضافة. العميل يكمل التصفح، والسلة تبقى في الشريط السفلي.
+    showSuccessToast("تمت إضافة المنتج إلى السلة.", 1400);
   }
 
   function increaseCartItem(productId: string, note: string) {
-    setShowCartDetails(false);
-
     setCart((currentCart) =>
       currentCart.map((item) =>
         item.product.id === productId && item.note === note
@@ -650,11 +668,9 @@ export default function MenuPage() {
     }
 
     const today = new Date();
-
     const year = String(today.getFullYear()).slice(-2);
     const month = String(today.getMonth() + 1).padStart(2, "0");
     const day = String(today.getDate()).padStart(2, "0");
-
     const dateCode = `${year}${month}${day}`;
     const tableCode = String(tableData.table_number || tableNumber || "00").padStart(2, "0");
 
@@ -683,6 +699,7 @@ export default function MenuPage() {
         status: "new",
         total,
         notes,
+        service_mode: serviceMode,
         order_number: orderNumber,
       })
       .select("id")
@@ -700,11 +717,10 @@ export default function MenuPage() {
       quantity: item.quantity,
       price: item.product.price,
       notes: item.note?.trim() || null,
+      status: "pending",
     }));
 
-    const { error: itemsError } = await supabase
-      .from("order_items")
-      .insert(orderItems);
+    const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
 
     if (itemsError) {
       setSending(false);
@@ -716,9 +732,7 @@ export default function MenuPage() {
 
     await supabase
       .from("table_sessions")
-      .update({
-        ordered_at: now,
-      })
+      .update({ ordered_at: now })
       .eq("id", tableSessionId)
       .is("ordered_at", null);
 
@@ -735,12 +749,13 @@ export default function MenuPage() {
 
     setHasTableOrders(true);
     setCurrentTableSessionId(tableSessionId);
-
     setCart([]);
     setNotes("");
-    setShowCartDetails(false);
+    setServiceMode("once");
+    setShowCartSheet(false);
     setSending(false);
     setSuccessMessage("تم إرسال الطلب بنجاح.");
+    await loadCustomerOrders(tableSessionId);
   }
 
   async function loadBillReviewProducts(tableSessionId: string) {
@@ -748,21 +763,14 @@ export default function MenuPage() {
       .from("order_items")
       .select(`
         product_id,
-        products (
-          name
-        ),
-        orders!inner (
-          table_session_id
-        )
+        products (name),
+        orders!inner (table_session_id)
       `)
       .eq("orders.table_session_id", tableSessionId);
 
     const uniqueProducts = new Map<string, BillReviewProduct>();
 
-    ((data || []) as unknown as {
-      product_id: string;
-      products: { name: string } | null;
-    }[]).forEach((item) => {
+    ((data || []) as unknown as { product_id: string; products: { name: string } | null }[]).forEach((item) => {
       if (!item.product_id || uniqueProducts.has(item.product_id)) return;
 
       const product = getProductById(item.product_id);
@@ -784,7 +792,6 @@ export default function MenuPage() {
     setSuccessMessage("");
 
     if (!branch) return;
-
     setReviewSending(productId);
 
     const alreadyReviewed = await hasRecentReview({
@@ -818,10 +825,7 @@ export default function MenuPage() {
         ...category,
         products: category.products.map((product) =>
           product.id === productId
-            ? {
-                ...product,
-                reviews: [...(product.reviews || []), { rating }],
-              }
+            ? { ...product, reviews: [...(product.reviews || []), { rating }] }
             : product
         ),
       }))
@@ -852,7 +856,6 @@ export default function MenuPage() {
     setSuccessMessage("");
 
     if (!branch) return;
-
     setReviewSending("service");
 
     const alreadyReviewed = await hasRecentReview({
@@ -923,7 +926,7 @@ export default function MenuPage() {
       .maybeSingle();
 
     if (existingCall) {
-      setSuccessMessage("تم استدعاء النادل مسبقاً.");
+      showSuccessToast("تم استدعاء النادل مسبقاً.");
       return;
     }
 
@@ -947,8 +950,7 @@ export default function MenuPage() {
       .eq("id", tableData.id);
 
     await logActivity(branch.id, tableData.id, "waiter_called");
-
-    setSuccessMessage("تم استدعاء النادل بنجاح.");
+    showSuccessToast("تم استدعاء النادل بنجاح.");
   }
 
   async function requestBill() {
@@ -966,15 +968,11 @@ export default function MenuPage() {
       setErrorMessage("لم يتم العثور على الطاولة.");
       return;
     }
-    if (
-  tableData.status === "cleaning" ||
-  tableData.status === "billing" ||
-  tableData.status === "closed"
-) {
-  setErrorMessage("هذه الطاولة غير متاحة حالياً.");
-  return;
-}
 
+    if (["cleaning", "billing", "closed"].includes(tableData.status || "")) {
+      setErrorMessage("هذه الطاولة غير متاحة حالياً.");
+      return;
+    }
 
     if (!tableData.current_session_id) {
       setHasTableOrders(false);
@@ -982,9 +980,7 @@ export default function MenuPage() {
       return;
     }
 
-    const sessionHasOrdersBeforeBill = await checkTableHasOrders(
-      tableData.current_session_id
-    );
+    const sessionHasOrdersBeforeBill = await checkTableHasOrders(tableData.current_session_id);
 
     if (!sessionHasOrdersBeforeBill) {
       setErrorMessage("لا يوجد طلبات على هذه الطاولة حتى الآن.");
@@ -1034,9 +1030,7 @@ export default function MenuPage() {
 
     await supabase
       .from("table_sessions")
-      .update({
-        bill_requested_at: now,
-      })
+      .update({ bill_requested_at: now })
       .eq("id", tableSessionId)
       .is("bill_requested_at", null);
 
@@ -1053,89 +1047,68 @@ export default function MenuPage() {
     await loadBillReviewProducts(tableSessionId);
 
     setShowBillReview(true);
-    setSuccessMessage(existingBill ? "تم طلب الفاتورة مسبقاً." : "تم إرسال طلب الفاتورة.");
+    showSuccessToast(
+      existingBill
+        ? "تم إرسال طلب الفاتورة مسبقاً."
+        : "تم إرسال طلب الفاتورة."
+    );
   }
 
   useEffect(() => {
     loadMenu();
   }, []);
 
-  const serviceAverage = getAverageRating(serviceReviews);
+  useEffect(() => {
+    if (!branch || !currentTableSessionId) return;
+
+    loadCustomerOrders(currentTableSessionId);
+
+    const channel = supabase
+      .channel(`customer-order-status-${currentTableSessionId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "orders", filter: `table_session_id=eq.${currentTableSessionId}` },
+        () => loadCustomerOrders(currentTableSessionId)
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "order_items" },
+        () => loadCustomerOrders(currentTableSessionId)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [branch?.id, currentTableSessionId]);
 
   if (loading) {
-    return (
-      <main
-        className="min-h-screen p-10 text-[#FFF8F0]"
-        dir="rtl"
-        style={{ backgroundColor: secondaryColor }}
-      >
-        جاري تحميل المنيو...
-      </main>
-    );
+    return <LoadingState secondaryColor={secondaryColor} text="جاري تحميل المنيو..." />;
   }
 
   if (!branch) {
-    return (
-      <main
-        className="min-h-screen p-10 text-[#FFF8F0]"
-        dir="rtl"
-        style={{ backgroundColor: secondaryColor }}
-      >
-        المنيو غير موجود
-      </main>
-    );
+    return <LoadingState secondaryColor={secondaryColor} text="المنيو غير موجود" />;
   }
 
   if (tableClosed) {
     return (
-      <main
-        className="min-h-screen p-6 text-[#FFF8F0]"
-        dir="rtl"
-        style={{ backgroundColor: secondaryColor }}
-      >
-        <section className="mx-auto flex min-h-[calc(100vh-48px)] max-w-xl items-center justify-center">
-          <div className="w-full rounded-[2rem] border border-[#4A3425] bg-[#241B16] p-8 text-center shadow-2xl">
+      <main dir="rtl" className="min-h-screen p-5 text-[#FFF8F0]" style={{ backgroundColor: secondaryColor }}>
+        <section className="mx-auto flex min-h-[calc(100vh-40px)] max-w-xl items-center justify-center">
+          <div className="w-full rounded-[2rem] border border-[#4A3425] bg-[#241B16] p-6 text-center shadow-2xl">
             {settings?.cover_url ? (
-              <img
-                src={settings.cover_url}
-                alt="Cover"
-                className="mb-6 h-40 w-full rounded-3xl object-cover"
-              />
+              <img src={settings.cover_url} alt="Cover" className="mb-5 h-36 w-full rounded-3xl object-cover" />
             ) : null}
 
-            {settings?.logo_url ? (
-              <img
-                src={settings.logo_url}
-                alt="Logo"
-                className="mx-auto h-40 w-40 rounded-3xl bg-[#2A211C] object-contain p-4 shadow-xl"
-              />
-            ) : (
-              <div className="mx-auto flex h-40 w-40 items-center justify-center rounded-3xl bg-[#2A211C] p-4 text-xl font-black text-[#C8B6A4] shadow-xl">
-                Logo
-              </div>
-            )}
+            <LogoBlock settings={settings} primaryColor={primaryColor} />
+            <h1 className="mt-6 text-3xl font-black">{branch?.name}</h1>
+            {branch?.city ? <p className="mt-2 text-[#C8B6A4]">{branch.city}</p> : null}
 
-            <h1 className="mt-8 text-4xl font-black">{branch?.name}</h1>
-
-            {branch?.city ? (
-              <p className="mt-2 text-[#C8B6A4]">{branch.city}</p>
-            ) : null}
-
-            <div
-              className="mx-auto mt-6 w-fit rounded-full border border-[#4A3425] bg-[#2A211C] px-5 py-2 font-black text-[#FFF8F0]"
-            >
-              {tableNumber
-  ? `طاولة رقم ${tableNumber}`
-  : "الطاولة الحالية"}
+            <div className="mx-auto mt-5 w-fit rounded-full border border-[#4A3425] bg-[#2A211C] px-5 py-2 font-black text-[#FFF8F0]">
+              {currentTableNumber ? `طاولة رقم ${currentTableNumber}` : "الطاولة الحالية"}
             </div>
 
-            <p className="mt-8 text-2xl font-black text-red-200">
-              {tableUnavailableTitle}
-            </p>
-
-            <p className="mt-3 leading-7 text-[#C8B6A4]">
-              {tableUnavailableDescription}
-            </p>
+            <p className="mt-7 text-2xl font-black text-red-200">{tableUnavailableTitle}</p>
+            <p className="mt-3 leading-7 text-[#C8B6A4]">{tableUnavailableDescription}</p>
           </div>
         </section>
       </main>
@@ -1143,502 +1116,667 @@ export default function MenuPage() {
   }
 
   return (
-    <main
-      className="min-h-screen p-5 pb-28 text-[#FFF8F0]"
-      dir="rtl"
-      style={{ backgroundColor: secondaryColor }}
-    >
-      <section className="mx-auto max-w-4xl">
-        <div className="overflow-hidden rounded-[2rem] border border-[#4A3425] bg-[#241B16] shadow-2xl">
-          {settings?.cover_url ? (
-            <img
-              src={settings.cover_url}
-              alt="Cover"
-              className="h-44 w-full object-cover"
+    <main dir="rtl" className="min-h-screen pb-32 text-[#FFF8F0]" style={{ backgroundColor: secondaryColor }}>
+      <section className="mx-auto max-w-3xl px-4 pt-4">
+        <HeroCard
+          branch={branch}
+          settings={settings}
+          currentTableNumber={currentTableNumber}
+          tableNumber={tableNumber}
+          tableIdParam={tableIdParam}
+          primaryColor={primaryColor}
+          serviceAverage={serviceAverage}
+          serviceReviewsCount={serviceReviews.length}
+        />
+
+        {latestOrder ? <OrderStatusCard order={latestOrder} primaryColor={primaryColor} /> : null}
+
+        <div className="sticky top-0 z-20 -mx-4 mt-4 border-y border-[#4A3425] bg-[#16110E]/95 px-4 py-3 backdrop-blur">
+          <div className="relative">
+            <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#C8B6A4]">🔍</span>
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="ابحث عن منتج..."
+              className="w-full rounded-2xl border border-[#4A3425] bg-[#241B16] py-4 pr-12 pl-4 text-sm font-bold text-[#FFF8F0] outline-none"
             />
-          ) : null}
-
-          <div className="p-6 text-center">
-            {settings?.logo_url && (
-              <img
-                src={settings.logo_url}
-                alt="Logo"
-                className="mx-auto h-28 w-28 rounded-3xl border-4 bg-[#2A211C] object-contain p-2 shadow-xl"
-                style={{ borderColor: secondaryColor }}
-              />
-            )}
-
-            <h1 className="mt-4 text-4xl font-black">
-              {branch.business_name || branch.name}
-            </h1>
-
-            <p className="mt-2 text-lg font-black text-[#C8B6A4]">
-              {branch.business_name ? branch.name : branch.city || ""}
-            </p>
-
-            {branch.business_name && branch.city ? (
-              <p className="mt-1 text-sm font-bold text-[#8f7d6c]">{branch.city}</p>
-            ) : null}
-
-            {settings?.description && (
-              <p className="mx-auto mt-4 max-w-xl leading-8 text-[#C8B6A4]">
-                {settings.description}
-              </p>
-            )}
-
-            {(tableNumber || tableIdParam) && (
-              <div className="mx-auto mt-5 w-fit rounded-full border border-[#4A3425] bg-[#2A211C] px-5 py-2 font-black text-[#FFF8F0]">
-                {currentTableNumber
-                  ? `طاولة رقم ${currentTableNumber}`
-                  : "الطاولة الحالية"}
-              </div>
-            )}
-
-            {(tableNumber || tableIdParam) && (
-              <div className="mx-auto mt-5 grid max-w-2xl grid-cols-2 gap-3">
-                <a
-                  href="#products"
-                  className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4 text-center font-black text-[#FFF8F0] shadow-xl"
-                >
-                  <div className="text-2xl">🛒</div>
-                  <div className="mt-1">طلب من المنيو</div>
-                  <div className="mt-1 text-[11px] text-[#C8B6A4]">اختر المنتجات ثم أرسل الطلب</div>
-                </a>
-
-                <button
-                  onClick={callWaiter}
-                  className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4 text-center font-black text-[#FFF8F0] shadow-xl"
-                >
-                  <div className="text-2xl">🛎️</div>
-                  <div className="mt-1">استدعاء نادل</div>
-                  <div className="mt-1 text-[11px] text-[#C8B6A4]">للمساعدة من الموظف</div>
-                </button>
-
-                <button
-                  onClick={() => setShowCartDetails(true)}
-                  className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4 text-center font-black text-[#FFF8F0] shadow-xl"
-                >
-                  <div className="text-2xl">🧺</div>
-                  <div className="mt-1">عرض السلة</div>
-                  <div className="mt-1 text-[11px] text-[#C8B6A4]">راجع طلبك قبل الإرسال</div>
-                </button>
-
-                <button
-                  onClick={() => {
-                    if (!hasTableOrders) {
-                      setErrorMessage("لا يوجد طلبات على هذه الطاولة حتى الآن.");
-                      return;
-                    }
-
-                    requestBill();
-                  }}
-                  disabled={!hasTableOrders}
-                  className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4 text-center font-black text-[#FFF8F0] shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  <div className="text-2xl">💳</div>
-                  <div className="mt-1">طلب الفاتورة</div>
-                  <div className="mt-1 text-[11px] text-[#C8B6A4]">
-                    {hasTableOrders ? "بعد الطلب تظهر صفحة التقييم" : "متاح بعد إرسال طلب"}
-                  </div>
-                </button>
-              </div>
-            )}
-
-            {errorMessage && (
-              <div className="mx-auto mt-5 max-w-xl rounded-2xl bg-red-500/20 p-4 text-red-300">
-                {errorMessage}
-              </div>
-            )}
-
-            {successMessage && (
-              <div className="mx-auto mt-5 max-w-xl rounded-2xl border border-[#4A3425] bg-[#2A211C] p-4 text-[#DEA54B]">
-                {successMessage}
-              </div>
-            )}
           </div>
+
+          {categories.length > 0 ? (
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+              {categories.map((category) => (
+                <a
+                  key={category.id}
+                  href={`#category-${category.id}`}
+                  className="shrink-0 rounded-full border border-[#4A3425] bg-[#241B16] px-4 py-2 text-sm font-black text-[#FFF8F0]"
+                >
+                  {category.name}
+                </a>
+              ))}
+            </div>
+          ) : null}
         </div>
 
-        {categories.length > 0 && (
-          <div
-            className="sticky top-0 z-20 mt-6 overflow-x-auto border-y border-[#4A3425] py-3 backdrop-blur"
-            style={{ backgroundColor: `${secondaryColor}f2` }}
-          >
-            <div className="flex gap-3">
-              {categories.map((category) => {
-                const firstImage = category.products?.find(
-                  (product) => product.image_url
-                )?.image_url;
-
-                return (
-                  <a
-                    key={category.id}
-                    href={`#category-${category.id}`}
-                    className="flex shrink-0 items-center gap-3 rounded-full border border-[#4A3425] bg-[#241B16] px-4 py-3 text-sm font-black"
-                  >
-                    {firstImage ? (
-                      <img
-                        src={firstImage}
-                        alt={category.name}
-                        className="h-9 w-9 rounded-full object-cover"
-                      />
-                    ) : (
-                      <span
-                        className="flex h-9 w-9 items-center justify-center rounded-full text-[#16110E]"
-                        style={{ backgroundColor: primaryColor }}
-                      >
-                        {category.name.slice(0, 1)}
-                      </span>
-                    )}
-
-                    <span>{category.name}</span>
-                  </a>
-                );
-              })}
+        {featuredProducts.length > 0 ? (
+          <section className="mt-5">
+            <SectionTitle title="مختارات المطعم" subtitle="منتجات مميزة ننصحك بتجربتها" />
+            <div className="mt-3 flex gap-3 overflow-x-auto pb-2">
+              {featuredProducts.map((product) => (
+                <FeaturedProductCard
+                  key={product.id}
+                  product={product}
+                  primaryColor={primaryColor}
+                  averageRating={getAverageRating(product.reviews)}
+                  selectedQuantity={getSelectedQuantity(product.id)}
+                  onIncrease={() => increaseProductQuantity(product.id)}
+                  onDecrease={() => decreaseProductQuantity(product.id)}
+                  onAdd={() => addToCart(product, getSelectedQuantity(product.id))}
+                />
+              ))}
             </div>
-          </div>
-        )}
+          </section>
+        ) : null}
 
-        <div id="products" className="mt-8 space-y-8">
-          {categories.map((category) => {
-            const availableProducts =
-              category.products?.filter(
-                (product) =>
-                  product.active && (product.stock_quantity ?? 0) > 0
-              ) || [];
-
-            if (availableProducts.length === 0) return null;
-
+        <div id="products" className="mt-6 space-y-7">
+          {filteredCategories.map((category) => {
+            const products = category.products || [];
+            if (products.length === 0) return null;
 
             return (
-              <section
-                key={category.id}
-                id={`category-${category.id}`}
-                className="scroll-mt-28"
-              >
-                <div className="mb-4 rounded-[2rem] border border-[#4A3425] bg-[#241B16] shadow-xl">
-                  <div className="p-5">
-                    <h2 className="text-3xl font-black">{category.name}</h2>
-                    <p className="mt-2 text-sm font-bold text-[#C8B6A4]">
-                      {availableProducts.length} منتج متاح
-                    </p>
-                  </div>
-                </div>
+              <section key={category.id} id={`category-${category.id}`} className="scroll-mt-36">
+                <SectionTitle title={category.name} subtitle={`${products.length} منتج`} />
 
-                <div className="space-y-3">
-                  {availableProducts.map((product) => {
+                <div className="mt-3 space-y-3">
+                  {products.map((product) => {
                     const productAverage = getAverageRating(product.reviews);
                     const selectedQuantity = getSelectedQuantity(product.id);
                     const isNoteOpen = Boolean(openProductNoteIds[product.id]);
 
                     return (
-                      <article
+                      <ProductCard
                         key={product.id}
-                        className="overflow-hidden rounded-3xl border border-[#4A3425] bg-[#241B16] p-4 shadow-xl"
-                      >
-                        <div className="flex gap-4">
-                          {product.image_url ? (
-                            <img
-                              src={product.image_url}
-                              alt={product.name}
-                              className="h-24 w-24 shrink-0 rounded-2xl object-cover"
-                            />
-                          ) : (
-                            <div
-                              className="flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl text-3xl font-black text-[#16110E]"
-                              style={{ backgroundColor: primaryColor }}
-                            >
-                              {product.name.slice(0, 1)}
-                            </div>
-                          )}
-
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <h3 className="text-xl font-black">
-                                  {product.name}
-                                </h3>
-
-                                {product.description && (
-                                  <p className="mt-1 text-sm leading-7 text-[#C8B6A4]">
-                                    {product.description}
-                                  </p>
-                                )}
-                              </div>
-
-                              <p
-                                className="shrink-0 font-black"
-                                style={{ color: primaryColor }}
-                              >
-                                {product.price} ريال
-                              </p>
-                            </div>
-
-                            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                              {productAverage !== null ? (
-                                <div className="text-sm text-[#C8B6A4]">
-                                  ⭐ {productAverage.toFixed(1)}
-                                  <span className="text-[#8f7d6c]">
-                                    {" "}
-                                    ({product.reviews?.length || 0})
-                                  </span>
-                                </div>
-                              ) : (
-                                <div className="text-sm text-[#8f7d6c]">
-                                  لا توجد تقييمات
-                                </div>
-                              )}
-
-                              <div className="flex items-center gap-2">
-                                <div className="flex items-center gap-2 rounded-2xl border border-[#4A3425] bg-[#2A211C] p-1">
-                                  <button
-                                    onClick={() => decreaseProductQuantity(product.id)}
-                                    className="h-10 w-10 rounded-xl border border-[#4A3425] text-lg font-black"
-                                  >
-                                    -
-                                  </button>
-
-                                  <span className="w-8 text-center font-black">
-                                    {selectedQuantity}
-                                  </span>
-
-                                  <button
-                                    onClick={() => increaseProductQuantity(product.id)}
-                                    className="h-10 w-10 rounded-xl text-lg font-black text-[#16110E]"
-                                    style={{ backgroundColor: primaryColor }}
-                                  >
-                                    +
-                                  </button>
-                                </div>
-
-                                <button
-                                  onClick={() => addToCart(product, selectedQuantity)}
-                                  disabled={selectedQuantity <= 0}
-                                  className="rounded-2xl px-5 py-3 font-black text-[#16110E] disabled:opacity-50"
-                                  style={{ backgroundColor: primaryColor }}
-                                >
-                                  إضافة للسلة
-                                </button>
-                              </div>
-                            </div>
-
-                            {isNoteOpen && selectedQuantity > 0 ? (
-                              <textarea
-                                value={productNotes[product.id] || ""}
-                                onChange={(event) =>
-                                  updateProductNote(product.id, event.target.value)
-                                }
-                                placeholder="ملاحظة لهذا المنتج: بدون سكر، زيادة ثلج..."
-                                className="mt-3 w-full rounded-2xl border border-[#4A3425] bg-[#2A211C] p-3 text-sm text-[#FFF8F0] outline-none"
-                              />
-                            ) : null}
-                          </div>
-                        </div>
-                      </article>
+                        product={product}
+                        primaryColor={primaryColor}
+                        averageRating={productAverage}
+                        selectedQuantity={selectedQuantity}
+                        isNoteOpen={isNoteOpen}
+                        note={productNotes[product.id] || ""}
+                        onIncrease={() => increaseProductQuantity(product.id)}
+                        onDecrease={() => decreaseProductQuantity(product.id)}
+                        onNoteChange={(value) => updateProductNote(product.id, value)}
+                        onAdd={() => addToCart(product, selectedQuantity)}
+                      />
                     );
                   })}
                 </div>
               </section>
             );
           })}
+
+          {filteredCategories.length === 0 ? (
+            <div className="rounded-3xl border border-[#4A3425] bg-[#241B16] p-6 text-center font-black text-[#C8B6A4]">
+              لا توجد نتائج مطابقة للبحث.
+            </div>
+          ) : null}
         </div>
       </section>
 
-      {cart.length > 0 && (
-        <div
-          id="cart"
-          className="fixed bottom-0 left-0 right-0 z-30 border-t border-[#4A3425] bg-[#16110E] p-3"
-        >
-          <div className="mx-auto max-w-4xl rounded-3xl border border-[#4A3425] bg-[#241B16] p-4 shadow-2xl">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h3 className="text-xl font-black">السلة</h3>
-                <p className="mt-1 text-sm text-[#C8B6A4]">
-                  {totalItems} منتج · الإجمالي {total.toFixed(2)} ريال
-                </p>
-              </div>
+      <BottomActionBar
+        totalItems={totalItems}
+        total={total}
+        hasTableOrders={hasTableOrders}
+        onCart={() => setShowCartSheet(true)}
+        onBill={requestBill}
+        onWaiter={callWaiter}
+        primaryColor={primaryColor}
+      />
 
-              <button
-                onClick={() => setShowCartDetails((current) => !current)}
-                className="rounded-2xl border border-[#4A3425] px-4 py-3 text-sm font-black"
-              >
-                {showCartDetails ? "إخفاء التفاصيل" : "تفاصيل السلة"}
-              </button>
-            </div>
-
-            {showCartDetails ? (
-              <>
-                <div className="mt-4 max-h-72 space-y-3 overflow-y-auto">
-                  {cart.map((item) => (
-                    <div
-                      key={item.product.id}
-                      className="rounded-2xl border border-[#4A3425] bg-[#2A211C] p-3"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-bold">{item.product.name}</p>
-                          <p className="text-sm text-[#C8B6A4]">
-                            {item.quantity} × {item.product.price} ريال
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => removeFromCart(item.product.id, item.note)}
-                            className="rounded-xl border border-[#4A3425] px-3 py-2"
-                          >
-                            -
-                          </button>
-
-                          <span className="w-6 text-center">{item.quantity}</span>
-
-                          <button
-                            onClick={() => increaseCartItem(item.product.id, item.note)}
-                            className="rounded-xl px-3 py-2 font-black text-[#16110E]"
-                            style={{ backgroundColor: primaryColor }}
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-
-                      {item.note ? (
-                        <p className="mt-3 rounded-xl bg-[#241B16] p-3 text-sm text-[#C8B6A4]">
-                          ملاحظة: {item.note}
-                        </p>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-[#4A3425] pt-4">
-                  <p className="text-lg font-black">الإجمالي: {total.toFixed(2)} ريال</p>
-
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      onClick={() => setShowCartDetails(false)}
-                      className="rounded-2xl border border-[#4A3425] bg-[#2A211C] px-5 py-4 font-black text-[#FFF8F0]"
-                    >
-                      إضافة منتجات أخرى
-                    </button>
-
-                    <button
-                      onClick={submitOrder}
-                      disabled={sending}
-                      className="rounded-2xl px-6 py-4 font-black text-[#16110E] disabled:opacity-60"
-                      style={{ backgroundColor: primaryColor }}
-                    >
-                      {sending ? "جاري الإرسال..." : "إرسال الطلب"}
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : null}
-          </div>
-        </div>
-      )}
+      {showCartSheet ? (
+        <CartBottomSheet
+          cart={cart}
+          total={total}
+          totalItems={totalItems}
+          notes={notes}
+          setNotes={setNotes}
+          serviceMode={serviceMode}
+          setServiceMode={setServiceMode}
+          sending={sending}
+          primaryColor={primaryColor}
+          onClose={() => setShowCartSheet(false)}
+          onSubmit={submitOrder}
+          onIncrease={increaseCartItem}
+          onRemove={removeFromCart}
+        />
+      ) : null}
 
       {showBillReview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[2rem] border border-[#4A3425] bg-[#241B16] p-5 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-3xl font-black">قيّم تجربتك</h2>
-                <p className="mt-2 text-[#C8B6A4]">
-                  التقييم يظهر بعد طلب الفاتورة لأن العميل جرّب المنتجات والخدمة.
-                </p>
-              </div>
-
-              <button
-                onClick={() => setShowBillReview(false)}
-                className="rounded-2xl border border-[#4A3425] px-4 py-2 font-black"
-              >
-                إغلاق
-              </button>
-            </div>
-
-            <div className="mt-5 rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4">
-              <h3 className="text-xl font-black">تقييم الخدمة</h3>
-
-              {serviceAverage !== null ? (
-                <p className="mt-2 text-sm text-[#C8B6A4]">
-                  التقييم الحالي: ⭐ {serviceAverage.toFixed(1)} ({serviceReviews.length} تقييم)
-                </p>
-              ) : (
-                <p className="mt-2 text-sm text-[#C8B6A4]">
-                  لا توجد تقييمات للخدمة حتى الآن.
-                </p>
-              )}
-
-              <RatingStars
-                disabled={reviewSending === "service"}
-                onRate={(rating) => submitServiceReview(rating)}
-              />
-            </div>
-
-            <div className="mt-4 space-y-3">
-              <h3 className="text-xl font-black">المنتجات التي طلبتها</h3>
-
-              {billReviewProducts.length === 0 ? (
-                <div className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4 text-[#C8B6A4]">
-                  لا توجد منتجات مرتبطة بهذه الجلسة حتى الآن.
-                </div>
-              ) : (
-                billReviewProducts.map((product) => (
-                  <div
-                    key={product.id}
-                    className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-lg font-black">{product.name}</p>
-                        {product.averageRating !== null ? (
-                          <p className="mt-1 text-sm text-[#C8B6A4]">
-                            التقييم الحالي: ⭐ {product.averageRating.toFixed(1)} ({product.reviewsCount} تقييم)
-                          </p>
-                        ) : (
-                          <p className="mt-1 text-sm text-[#C8B6A4]">
-                            لا توجد تقييمات لهذا المنتج.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <RatingStars
-                      disabled={reviewSending === product.id}
-                      onRate={(rating) => submitReview(product.id, rating)}
-                    />
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
+        <ReviewSheet
+          serviceAverage={serviceAverage}
+          serviceReviewsCount={serviceReviews.length}
+          billReviewProducts={billReviewProducts}
+          reviewSending={reviewSending}
+          onClose={() => setShowBillReview(false)}
+          onServiceRate={submitServiceReview}
+          onProductRate={submitReview}
+        />
       ) : null}
+
+      <Toast error={errorMessage} success={successMessage} />
     </main>
   );
 }
 
-function RatingStars({
-  onRate,
-  disabled = false,
+function LoadingState({ secondaryColor, text }: { secondaryColor: string; text: string }) {
+  return (
+    <main className="min-h-screen p-10 text-[#FFF8F0]" dir="rtl" style={{ backgroundColor: secondaryColor }}>
+      {text}
+    </main>
+  );
+}
+
+function LogoBlock({ settings, primaryColor }: { settings: BranchSettings | null; primaryColor: string }) {
+  if (settings?.logo_url) {
+    return (
+      <img
+        src={settings.logo_url}
+        alt="Logo"
+        className="mx-auto h-24 w-24 rounded-3xl bg-[#2A211C] object-contain p-2 shadow-xl"
+        style={{ border: `3px solid ${primaryColor}` }}
+      />
+    );
+  }
+
+  return (
+    <div
+      className="mx-auto flex h-24 w-24 items-center justify-center rounded-3xl text-2xl font-black text-[#16110E] shadow-xl"
+      style={{ backgroundColor: primaryColor }}
+    >
+      KARZ
+    </div>
+  );
+}
+
+function HeroCard({
+  branch,
+  settings,
+  currentTableNumber,
+  tableNumber,
+  tableIdParam,
+  primaryColor,
+  serviceAverage,
+  serviceReviewsCount,
 }: {
-  onRate: (rating: number) => void;
-  disabled?: boolean;
+  branch: Branch;
+  settings: BranchSettings | null;
+  currentTableNumber: number | null;
+  tableNumber: string | null;
+  tableIdParam: string | null;
+  primaryColor: string;
+  serviceAverage: number | null;
+  serviceReviewsCount: number;
 }) {
+  return (
+    <section className="overflow-hidden rounded-[2rem] border border-[#4A3425] bg-[#241B16] shadow-2xl">
+      {settings?.cover_url ? <img src={settings.cover_url} alt="Cover" className="h-28 w-full object-cover" /> : null}
+
+      <div className="p-5 text-center">
+        <LogoBlock settings={settings} primaryColor={primaryColor} />
+        <h1 className="mt-4 text-3xl font-black">{branch.business_name || branch.name}</h1>
+        <p className="mt-2 text-sm font-black text-[#C8B6A4]">
+          {branch.business_name ? branch.name : branch.city || ""}
+        </p>
+
+        {settings?.description ? (
+          <p className="mx-auto mt-3 line-clamp-2 max-w-xl text-sm leading-7 text-[#C8B6A4]">
+            {settings.description}
+          </p>
+        ) : null}
+
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          {(tableNumber || tableIdParam) ? (
+            <span className="rounded-full border border-[#4A3425] bg-[#2A211C] px-4 py-2 text-sm font-black">
+              {currentTableNumber ? `طاولة ${currentTableNumber}` : "الطاولة الحالية"}
+            </span>
+          ) : null}
+
+          <span className="rounded-full border border-[#4A3425] bg-[#2A211C] px-4 py-2 text-sm font-black text-[#C8B6A4]">
+            ⭐ {serviceAverage !== null ? serviceAverage.toFixed(1) : "جديد"} {serviceReviewsCount > 0 ? `(${serviceReviewsCount})` : ""}
+          </span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function OrderStatusCard({ order, primaryColor }: { order: CustomerOrder; primaryColor: string }) {
+  const stepIndex = getOrderStepIndex(order);
+
+  return (
+    <section className="mt-4 rounded-3xl border border-[#4A3425] bg-[#241B16] p-4 shadow-xl">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-bold text-[#C8B6A4]">متابعة الطلب</p>
+          <h2 className="mt-1 text-xl font-black">#{order.order_number || "طلبك الحالي"}</h2>
+        </div>
+        <span className="rounded-full px-4 py-2 text-sm font-black text-[#16110E]" style={{ backgroundColor: primaryColor }}>
+          مباشر
+        </span>
+      </div>
+
+      <div className="mt-4 grid grid-cols-4 gap-2">
+        {ORDER_STEPS.map((step, index) => {
+          const active = index <= stepIndex;
+          return (
+            <div
+              key={step.key}
+              className={`rounded-2xl border p-3 text-center text-[11px] font-black ${active ? "border-[#C68A3D] bg-[#C68A3D]/15 text-[#DEA54B]" : "border-[#4A3425] bg-[#2A211C] text-[#8f7d6c]"}`}
+            >
+              <div className="text-lg">{step.icon}</div>
+              <div className="mt-1">{step.label}</div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function getOrderStepIndex(order: CustomerOrder) {
+  const statuses = (order.order_items || []).map((item) => item.status || "pending");
+
+  if (order.status === "delivered" || statuses.length > 0 && statuses.every((status) => status === "delivered")) return 3;
+  if (order.status === "ready" || statuses.some((status) => ["ready", "picked_up"].includes(status))) return 2;
+  if (order.status === "preparing" || statuses.some((status) => status === "preparing")) return 1;
+  return 0;
+}
+
+function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div className="flex items-end justify-between gap-3">
+      <div>
+        <h2 className="text-2xl font-black">{title}</h2>
+        {subtitle ? <p className="mt-1 text-sm font-bold text-[#C8B6A4]">{subtitle}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function ProductImage({ product, primaryColor, compact = false }: { product: Product; primaryColor: string; compact?: boolean }) {
+  const size = compact ? "h-20 w-20" : "h-24 w-24";
+
+  if (product.image_url) {
+    return <img src={product.image_url} alt={product.name} className={`${size} shrink-0 rounded-2xl object-cover`} />;
+  }
+
+  return (
+    <div
+      className={`${size} flex shrink-0 items-center justify-center rounded-2xl text-2xl font-black text-[#16110E]`}
+      style={{ backgroundColor: primaryColor }}
+    >
+      {product.name.slice(0, 1)}
+    </div>
+  );
+}
+
+function FeaturedProductCard({
+  product,
+  primaryColor,
+  averageRating,
+  selectedQuantity,
+  onIncrease,
+  onDecrease,
+  onAdd,
+}: {
+  product: Product;
+  primaryColor: string;
+  averageRating: number | null;
+  selectedQuantity: number;
+  onIncrease: () => void;
+  onDecrease: () => void;
+  onAdd: () => void;
+}) {
+  return (
+    <article className="w-56 shrink-0 rounded-3xl border border-[#4A3425] bg-[#241B16] p-3 shadow-xl">
+      <ProductImage product={product} primaryColor={primaryColor} compact />
+      <h3 className="mt-3 line-clamp-1 text-lg font-black">{product.name}</h3>
+      <p className="mt-1 text-sm font-black" style={{ color: primaryColor }}>{product.price} ريال</p>
+      <p className="mt-1 text-xs text-[#C8B6A4]">⭐ {averageRating !== null ? averageRating.toFixed(1) : "جديد"}</p>
+      <QuantityActions selectedQuantity={selectedQuantity} primaryColor={primaryColor} onIncrease={onIncrease} onDecrease={onDecrease} onAdd={onAdd} />
+    </article>
+  );
+}
+
+function ProductCard({
+  product,
+  primaryColor,
+  averageRating,
+  selectedQuantity,
+  isNoteOpen,
+  note,
+  onIncrease,
+  onDecrease,
+  onNoteChange,
+  onAdd,
+}: {
+  product: Product;
+  primaryColor: string;
+  averageRating: number | null;
+  selectedQuantity: number;
+  isNoteOpen: boolean;
+  note: string;
+  onIncrease: () => void;
+  onDecrease: () => void;
+  onNoteChange: (value: string) => void;
+  onAdd: () => void;
+}) {
+  const available = product.active && (product.stock_quantity ?? 0) > 0;
+
+  return (
+    <article className={`overflow-hidden rounded-3xl border border-[#4A3425] bg-[#241B16] p-4 shadow-xl ${available ? "" : "opacity-60"}`}>
+      <div className="flex gap-4">
+        <ProductImage product={product} primaryColor={available ? primaryColor : "#6b6258"} />
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="karz-product-title text-xl font-black">{product.name}</h3>
+              {product.description ? <p className="mt-1 line-clamp-2 text-sm leading-6 text-[#C8B6A4]">{product.description}</p> : null}
+            </div>
+
+            <p className="shrink-0 font-black" style={{ color: available ? primaryColor : "#8f7d6c" }}>{product.price} ريال</p>
+          </div>
+
+          <div className="karz-product-actions mt-3 flex flex-wrap items-center justify-between gap-3">
+            {available ? (
+              <div className="text-sm text-[#C8B6A4]">
+                ⭐ {averageRating !== null ? averageRating.toFixed(1) : "جديد"}
+                {product.reviews?.length ? <span className="text-[#8f7d6c]"> ({product.reviews.length})</span> : null}
+              </div>
+            ) : (
+              <div className="rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-sm font-black text-red-200">غير متوفر حالياً</div>
+            )}
+
+            {available ? (
+              <QuantityActions selectedQuantity={selectedQuantity} primaryColor={primaryColor} onIncrease={onIncrease} onDecrease={onDecrease} onAdd={onAdd} />
+            ) : null}
+          </div>
+
+          {isNoteOpen && selectedQuantity > 0 && available ? (
+            <textarea
+              value={note}
+              onChange={(event) => onNoteChange(event.target.value)}
+              placeholder="ملاحظة لهذا المنتج: بدون سكر، زيادة ثلج..."
+              className="mt-3 w-full rounded-2xl border border-[#4A3425] bg-[#2A211C] p-3 text-sm text-[#FFF8F0] outline-none"
+            />
+          ) : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function QuantityActions({
+  selectedQuantity,
+  primaryColor,
+  onIncrease,
+  onDecrease,
+  onAdd,
+}: {
+  selectedQuantity: number;
+  primaryColor: string;
+  onIncrease: () => void;
+  onDecrease: () => void;
+  onAdd: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 rounded-2xl border border-[#4A3425] bg-[#2A211C] p-1">
+        <button onClick={onDecrease} className="h-9 w-9 rounded-xl border border-[#4A3425] text-lg font-black">-</button>
+        <span className="w-7 text-center font-black">{selectedQuantity}</span>
+        <button onClick={onIncrease} className="h-9 w-9 rounded-xl text-lg font-black text-[#16110E]" style={{ backgroundColor: primaryColor }}>+</button>
+      </div>
+
+      <button onClick={onAdd} disabled={selectedQuantity <= 0} className="rounded-2xl px-4 py-3 text-sm font-black text-[#16110E] disabled:opacity-50" style={{ backgroundColor: primaryColor }}>
+        إضافة
+      </button>
+    </div>
+  );
+}
+
+function FloatingWaiterButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="fixed bottom-24 right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full border border-[#4A3425] bg-[#241B16] text-2xl shadow-2xl"
+      title="استدعاء نادل"
+    >
+      🛎️
+    </button>
+  );
+}
+
+function BottomActionBar({
+  totalItems,
+  total,
+  hasTableOrders,
+  onCart,
+  onBill,
+  onWaiter,
+  primaryColor,
+}: {
+  totalItems: number;
+  total: number;
+  hasTableOrders: boolean;
+  onCart: () => void;
+  onBill: () => void;
+  onWaiter: () => void;
+  primaryColor: string;
+}) {
+  return (
+    <div className="karz-bottom-bar fixed bottom-0 left-0 right-0 z-30 border-t border-[#4A3425] bg-[#16110E]/95 p-3 backdrop-blur">
+      <div className="mx-auto grid max-w-3xl grid-cols-3 gap-2">
+        <button onClick={onWaiter} className="rounded-2xl border border-[#4A3425] bg-[#241B16] px-3 py-3 text-center font-black text-[#FFF8F0] shadow-xl">
+          🛎️
+          <div className="mt-1 text-[11px] font-bold text-[#C8B6A4]">استدعاء النادل</div>
+        </button>
+
+        <button onClick={onCart} className="rounded-2xl px-3 py-3 text-center font-black text-[#16110E] shadow-xl" style={{ backgroundColor: primaryColor }}>
+          🧺 عرض السلة
+          <div className="mt-1 text-[11px] font-bold">{totalItems} · {total.toFixed(2)} ريال</div>
+        </button>
+
+        <button
+          onClick={onBill}
+          disabled={!hasTableOrders}
+          className="rounded-2xl border border-[#4A3425] bg-[#241B16] px-3 py-3 text-center font-black text-[#FFF8F0] shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          💳 طلب الفاتورة
+          <div className="mt-1 text-[11px] font-bold text-[#C8B6A4]">{hasTableOrders ? "مع التقييم" : "بعد الطلب"}</div>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CartBottomSheet({
+  cart,
+  total,
+  totalItems,
+  notes,
+  setNotes,
+  serviceMode,
+  setServiceMode,
+  sending,
+  primaryColor,
+  onClose,
+  onSubmit,
+  onIncrease,
+  onRemove,
+}: {
+  cart: CartItem[];
+  total: number;
+  totalItems: number;
+  notes: string;
+  setNotes: (value: string) => void;
+  serviceMode: ServiceMode;
+  setServiceMode: (value: ServiceMode) => void;
+  sending: boolean;
+  primaryColor: string;
+  onClose: () => void;
+  onSubmit: () => void;
+  onIncrease: (productId: string, note: string) => void;
+  onRemove: (productId: string, note: string) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-black/70" onClick={onClose}>
+      <section className="max-h-[88vh] w-full overflow-y-auto rounded-t-[2rem] border border-[#4A3425] bg-[#16110E] p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+        <div className="mx-auto max-w-3xl">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-black">السلة</h2>
+              <p className="mt-1 text-sm text-[#C8B6A4]">{totalItems} منتج · {total.toFixed(2)} ريال</p>
+            </div>
+            <button onClick={onClose} className="rounded-2xl border border-[#4A3425] px-4 py-2 font-black">إغلاق</button>
+          </div>
+
+          {cart.length === 0 ? (
+            <div className="mt-5 rounded-3xl border border-[#4A3425] bg-[#241B16] p-6 text-center font-black text-[#C8B6A4]">السلة فارغة.</div>
+          ) : (
+            <>
+              <div className="mt-4 max-h-72 space-y-3 overflow-y-auto">
+                {cart.map((item) => (
+                  <div key={`${item.product.id}-${item.note}`} className="rounded-2xl border border-[#4A3425] bg-[#241B16] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-bold">{item.product.name}</p>
+                        <p className="text-sm text-[#C8B6A4]">{item.quantity} × {item.product.price} ريال</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => onRemove(item.product.id, item.note)} className="rounded-xl border border-[#4A3425] px-3 py-2">-</button>
+                        <span className="w-6 text-center">{item.quantity}</span>
+                        <button onClick={() => onIncrease(item.product.id, item.note)} className="rounded-xl px-3 py-2 font-black text-[#16110E]" style={{ backgroundColor: primaryColor }}>+</button>
+                      </div>
+                    </div>
+                    {item.note ? <p className="mt-3 rounded-xl bg-[#2A211C] p-3 text-sm text-[#C8B6A4]">ملاحظة: {item.note}</p> : null}
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-3xl border border-[#4A3425] bg-[#241B16] p-4">
+                <h3 className="text-lg font-black">طريقة تقديم الطلب</h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <ServiceModeButton active={serviceMode === "once"} title="مرة واحدة" subtitle="يصل الطلب كامل عند الجاهزية" onClick={() => setServiceMode("once")} />
+                  <ServiceModeButton active={serviceMode === "staged"} title="على دفعات" subtitle="كل منتج جاهز يصل مباشرة" onClick={() => setServiceMode("staged")} />
+                </div>
+              </div>
+
+              <textarea
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="ملاحظة عامة للطلب..."
+                className="mt-4 w-full rounded-3xl border border-[#4A3425] bg-[#241B16] p-4 text-sm text-[#FFF8F0] outline-none"
+              />
+
+              <button onClick={onSubmit} disabled={sending} className="mt-4 w-full rounded-2xl px-6 py-4 font-black text-[#16110E] disabled:opacity-60" style={{ backgroundColor: primaryColor }}>
+                {sending ? "جاري الإرسال..." : `إرسال الطلب · ${total.toFixed(2)} ريال`}
+              </button>
+            </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ServiceModeButton({ active, title, subtitle, onClick }: { active: boolean; title: string; subtitle: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-2xl border p-4 text-right font-black ${active ? "border-[#C68A3D] bg-[#C68A3D]/20 text-[#DEA54B]" : "border-[#4A3425] bg-[#2A211C] text-[#FFF8F0]"}`}
+    >
+      <div>{title}</div>
+      <div className="mt-1 text-xs font-bold text-[#C8B6A4]">{subtitle}</div>
+    </button>
+  );
+}
+
+function ReviewSheet({
+  serviceAverage,
+  serviceReviewsCount,
+  billReviewProducts,
+  reviewSending,
+  onClose,
+  onServiceRate,
+  onProductRate,
+}: {
+  serviceAverage: number | null;
+  serviceReviewsCount: number;
+  billReviewProducts: BillReviewProduct[];
+  reviewSending: string | null;
+  onClose: () => void;
+  onServiceRate: (rating: number) => void;
+  onProductRate: (productId: string, rating: number) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-0 sm:items-center sm:p-4">
+      <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] border border-[#4A3425] bg-[#241B16] p-5 shadow-2xl sm:mx-auto sm:max-w-2xl sm:rounded-[2rem]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-3xl font-black">شكراً لزيارتكم ❤️</h2>
+            <p className="mt-2 text-[#C8B6A4]">قيّم تجربتك وساعدنا نطوّر الخدمة.</p>
+          </div>
+          <button onClick={onClose} className="rounded-2xl border border-[#4A3425] px-4 py-2 font-black">إغلاق</button>
+        </div>
+
+        <div className="mt-5 rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4">
+          <h3 className="karz-product-title text-xl font-black">تقييم الخدمة</h3>
+          <p className="mt-2 text-sm text-[#C8B6A4]">
+            {serviceAverage !== null ? `التقييم الحالي: ⭐ ${serviceAverage.toFixed(1)} (${serviceReviewsCount} تقييم)` : "لا توجد تقييمات للخدمة حتى الآن."}
+          </p>
+          <RatingStars disabled={reviewSending === "service"} onRate={onServiceRate} />
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <h3 className="karz-product-title text-xl font-black">المنتجات التي طلبتها</h3>
+          {billReviewProducts.length === 0 ? (
+            <div className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4 text-[#C8B6A4]">لا توجد منتجات مرتبطة بهذه الجلسة حتى الآن.</div>
+          ) : (
+            billReviewProducts.map((product) => (
+              <div key={product.id} className="rounded-3xl border border-[#4A3425] bg-[#2A211C] p-4">
+                <p className="text-lg font-black">{product.name}</p>
+                <p className="mt-1 text-sm text-[#C8B6A4]">
+                  {product.averageRating !== null ? `التقييم الحالي: ⭐ ${product.averageRating.toFixed(1)} (${product.reviewsCount} تقييم)` : "لا توجد تقييمات لهذا المنتج."}
+                </p>
+                <RatingStars disabled={reviewSending === product.id} onRate={(rating) => onProductRate(product.id, rating)} />
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Toast({ error, success }: { error: string; success: string }) {
+  if (!error && !success) return null;
+
+  return (
+    <div className="fixed left-4 right-4 top-4 z-[60] mx-auto max-w-xl">
+      {error ? <div className="rounded-2xl bg-red-500/90 p-4 text-center font-black text-white shadow-2xl">{error}</div> : null}
+      {success ? <div className="rounded-2xl border border-[#4A3425] bg-[#241B16] p-4 text-center font-black text-[#DEA54B] shadow-2xl">{success}</div> : null}
+    </div>
+  );
+}
+
+function RatingStars({ onRate, disabled = false }: { onRate: (rating: number) => void; disabled?: boolean }) {
   const [hoveredRating, setHoveredRating] = useState(0);
 
   return (
     <div className="mt-4 flex justify-center">
-      <div
-        className="flex items-center justify-center gap-1 rounded-2xl border px-4 py-3"
-        style={{
-          borderColor: "rgba(198,138,61,.45)",
-          background: "rgba(198,138,61,.12)",
-        }}
-      >
+      <div className="flex items-center justify-center gap-1 rounded-2xl border px-4 py-3" style={{ borderColor: "rgba(198,138,61,.45)", background: "rgba(198,138,61,.12)" }}>
         {[1, 2, 3, 4, 5].map((rating) => {
           const isActive = hoveredRating >= rating;
-
           return (
             <button
               key={rating}
@@ -1648,10 +1786,7 @@ function RatingStars({
               onMouseLeave={() => setHoveredRating(0)}
               disabled={disabled}
               className="text-3xl leading-none transition hover:scale-125 disabled:opacity-50"
-              style={{
-                color: isActive ? "#DEA54B" : "rgba(198,138,61,.45)",
-                textShadow: isActive ? "0 0 12px rgba(198,138,61,.45)" : "none",
-              }}
+              style={{ color: isActive ? "#DEA54B" : "rgba(198,138,61,.45)", textShadow: isActive ? "0 0 12px rgba(198,138,61,.45)" : "none" }}
               title={`${rating} من 5`}
             >
               ★
